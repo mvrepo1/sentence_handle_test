@@ -49,28 +49,22 @@ const splitIntoSentences = (text) => {
             let prev = i > 0 ? text[i - 1] : ' ';
             let next = i < text.length - 1 ? text[i + 1] : ' ';
 
-            let isPrevWord = /[\p{L}\p{N}]/u.test(prev);
+            // isPrevAttached: Ký tự liền trước là chữ, số, hoặc dấu câu thường nằm sát bên trong ngoặc đóng
+            let isPrevAttached = /[\p{L}\p{N}.,;!?…\]\)]/u.test(prev);
+
+            // isNextWord: Ký tự liền sau là chữ hoặc số
             let isNextWord = /[\p{L}\p{N}]/u.test(next);
 
-            // Heuristic phán đoán ngoặc thẳng thông minh
-            if (!isPrevWord && isNextWord) {
-                isOpening = true; // VD: ."Thiên
-            } else if (isPrevWord && !isNextWord) {
-                isClosing = true; // VD: tài", 
-            } else if (isPrevWord && isNextWord) {
-                // Nhập nhằng kiểu a"B (VD: đoạn"Nhìn) -> Dựa vào trạng thái hiện tại
-                if (!inQuote) isOpening = true;
-                else isClosing = true;
+            if (!isPrevAttached && isNextWord) {
+                // Chắc chắn là mở (VD: [space]"Thiên, hoặc :"Thiên)
+                isOpening = true;
+            } else if (isPrevAttached && !isNextWord) {
+                // Chắc chắn là đóng (VD: tài", Đinh!")
+                isClosing = true;
             } else {
-                // Nhập nhằng kiểu không có chữ 2 bên (VD: a!"! hoặc đứng độc lập)
-                if (/[.,;:!?…\]\)]/.test(prev)) {
-                    isClosing = true; // Đi sau dấu câu thường là đóng ngoặc
-                } else if (/[\[\(]/.test(prev)) {
-                    isOpening = true;
-                } else {
-                    if (!inQuote) isOpening = true;
-                    else isClosing = true;
-                }
+                // Trường hợp nhập nhằng (VD: đoạn"Nhìn, hạ?"Nghe) -> Dựa vào cờ inQuote để tự đảo chiều
+                if (inQuote) isClosing = true;
+                else isOpening = true;
             }
         }
 
