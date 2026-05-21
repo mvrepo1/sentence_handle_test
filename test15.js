@@ -3,13 +3,12 @@ const splitIntoSentences = (text) => {
     text = text.replace(/\\\[/g, '[').replace(/\\\]/g, ']');
 
     // --- FIX LỖI THỪA NGOẶC KÉP (VD: "“ hoặc ”") ---
-    // Xóa dấu " hoặc ' nếu nó dính sát ngay trước hoặc ngay sau các ngoặc thông minh
     text = text.replace(/["']([“「『”」』])/g, '$1');
     text = text.replace(/([“「『”」』])["']/g, '$1');
 
-    // --- FIX 1: Giới hạn Regex sửa ngoặc để không "nuốt trọn" đoạn dài ---
-    text = text.replace(/“([^”"“]*?)"/g, '“$1”');
-    text = text.replace(/"([^“"”]*?)”/g, '“$1”');
+    // --- GIỚI HẠN REGEX SỬA NGOẶC ---
+    text = text.replace(/“([^”"“\r\n]*?)"/g, '“$1”');
+    text = text.replace(/"([^“"”\r\n]*?)”/g, '“$1”');
     // ----------------------------------------------------------------------
 
     text = text.replace(/(?<=[\p{L}\p{N}.,;:!?…])(["”」』][.,;:!?…]+)([\p{L}\p{N}])/gu, '$1 $2');
@@ -98,17 +97,14 @@ const splitIntoSentences = (text) => {
         }
     }
     text = normalizedText;
-
     const openQuotes = ['"', '“', '「', '『'];
     const closeQuotes = ['"', '”', '」', '』'];
     const allQuotes = [...openQuotes, ...closeQuotes];
-
     const abbreviations = [
         'Mr', 'Mrs', 'Ms', 'Miss', 'Dr', 'Prof', 'St', 'Jr', 'Sr',
         'Rev', 'Lt', 'Capt', 'Col', 'Gen', 'Sgt', 'Cpl', 'Pvt', 'Gov',
         'GS', 'PGS', 'TS', 'ThS', 'BS', 'KS', 'LS', 'Tp', 'TP'
     ];
-
     const isUpperishStart = (str) =>
         /^["'“「『\-\s\u3164\u200B]*([\p{Lu}\p{N}]|[({\[<][\p{L}\p{N}]+[)}\]>])/u.test(str);
     const isUpperishStartAfterSpace = (str) =>
@@ -119,23 +115,9 @@ const splitIntoSentences = (text) => {
         const lastWord = words[words.length - 1];
         return abbreviations.includes(lastWord);
     };
-    const countChar = (str, char) => {
-        let count = 0;
-        for (let i = 0; i < str.length; i++) if (str[i] === char) count++;
-        return count;
-    };
 
-    const specialPairs = { '“': '”', '「': '」', '『': '』' };
-    const unbalanced = {};
-    for (const [open, close] of Object.entries(specialPairs)) {
-        if (countChar(text, open) !== countChar(text, close)) {
-            unbalanced[open] = true;
-            unbalanced[close] = true;
-        }
-    }
-
-    const isParenthesisBalanced = countChar(text, '(') === countChar(text, ')');
-    const isSquareBracketBalanced = countChar(text, '[') === countChar(text, ']');
+    const isParenthesisBalanced = (text.match(/\(/g) || []).length === (text.match(/\)/g) || []).length;
+    const isSquareBracketBalanced = (text.match(/\[/g) || []).length === (text.match(/\]/g) || []).length;
 
     const splitSegment = (seg) => {
         const results = [];
@@ -147,14 +129,50 @@ const splitIntoSentences = (text) => {
         let startedWithQuote = false;
         let i = 0;
 
-        const openQuoteIndices = new Set();
-        const closeQuoteIndices = new Set();
-        const quoteRegex = /"[^"]*[^\s"][^"]*"/g;
-        let mMatch;
-        while ((mMatch = quoteRegex.exec(seg)) !== null) {
-            openQuoteIndices.add(mMatch.index);
-            closeQuoteIndices.add(mMatch.index + mMatch[0].length - 1);
+        // =======================================================
+        // --- FIX 5: BẮT CẶP NGOẶC CHUẨN XÁC BẰNG INDEX (STACK)
+        // =======================================================
+        const pairedOpenIndices = new Set();
+        const pairedCloseIndices = new Set();
+
+        // Ngoặc thông minh (Stack-based)
+        const distinctPairs = { '“': '”', '「': '」', '『': '』' };
+        for (const [open, close] of Object.entries(distinctPairs)) {
+            const stack = [];
+            for (let j = 0; j < seg.length; j++) {
+                if (seg[j] === open) {
+                    stack.push(j);
+                } else if (seg[j] === close) {
+                    if (stack.length > 0) {
+                        const openIdx = stack.pop();
+                        // Chống bắt cặp xuyên dòng để bảo vệ an toàn
+                        let hasNewline = false;
+                        for (let k = openIdx; k < j; k++) {
+                            if (seg[k] === '\n' || seg[k] === '\r') {
+                                hasNewline = true;
+                                break;
+                            }
+                        }
+                        if (!hasNewline) {
+                            pairedOpenIndices.add(openIdx);
+                            pairedCloseIndices.add(j);
+                        } else {
+                            stack.length = 0; // Hủy bắt cặp nếu chứa \n
+                        }
+                    }
+                }
+            }
         }
+
+        // Ngoặc thường (Regex-based)
+        const straightQuoteRegex = /"[^"\r\n]*[^\s"\r\n][^"\r\n]*"/g;
+        let mMatch;
+        while ((mMatch = straightQuoteRegex.exec(seg)) !== null) {
+            pairedOpenIndices.add(mMatch.index);
+            pairedCloseIndices.add(mMatch.index + mMatch[0].length - 1);
+        }
+
+        // =======================================================
 
         while (i < seg.length) {
             const ch = seg[i];
@@ -167,22 +185,19 @@ const splitIntoSentences = (text) => {
             if (allQuotes.includes(ch)) {
                 if (current.trim().replace(/^[\-\s]+/, '') === '') startedWithQuote = true;
 
-                if (ch === '"') {
-                    if (openQuoteIndices.has(i)) {
-                        quoteLevel++;
-                    } else if (closeQuoteIndices.has(i)) {
-                        quoteLevel = Math.max(0, quoteLevel - 1);
-                    }
-                }
-                else if (openQuotes.includes(ch)) {
-                    if (!unbalanced[ch]) quoteLevel++;
-                } else if (closeQuotes.includes(ch)) {
-                    if (!unbalanced[ch]) quoteLevel = Math.max(0, quoteLevel - 1);
+                const isPairedOpen = pairedOpenIndices.has(i);
+                const isPairedClose = pairedCloseIndices.has(i);
+
+                if (isPairedOpen) {
+                    quoteLevel++;
+                } else if (isPairedClose) {
+                    quoteLevel = Math.max(0, quoteLevel - 1);
                 }
 
                 current += ch;
                 i++;
-                if (quoteLevel === 0 && !unbalanced[ch]) {
+
+                if (quoteLevel === 0 && isPairedClose) {
                     const rest = seg.slice(i);
                     const nextNonSpaceMatch = rest.match(/^\s*(.)/);
                     if (nextNonSpaceMatch) {
@@ -194,7 +209,7 @@ const splitIntoSentences = (text) => {
                             let reallyOpen = true;
                             if (nextChar === '"') {
                                 const nextCharIndex = i + rest.indexOf('"');
-                                if (!openQuoteIndices.has(nextCharIndex)) reallyOpen = false;
+                                if (!pairedOpenIndices.has(nextCharIndex)) reallyOpen = false;
                             }
                             if (reallyOpen) canSplitQuote = true;
                         }
@@ -206,22 +221,24 @@ const splitIntoSentences = (text) => {
                             const hasInternalSentence = /[.!?…]+[\s]+/.test(textInsideQuote);
                             if ((!hasInternalSentence || allQuotes.includes(nextChar)) && !isAbbreviation(current)) {
                                 let isAttachedCloseQuote = closeQuotes.includes(rest[0]);
-                                if (rest[0] === '"' && openQuoteIndices.has(i)) {
+                                if (rest[0] === '"' && pairedOpenIndices.has(i)) {
                                     isAttachedCloseQuote = false;
                                 }
 
-                                // --- FIX 2: Đổi \p{L} thành \p{Ll} để cho phép bẻ câu nếu chữ dính liền là Chữ Hoa ---
                                 const isAttachedWord = /^[\p{Ll}\p{N}]/u.test(rest) || isAttachedCloseQuote;
 
                                 if (!isAttachedWord && ((isUpperishStart(rest) && !isJustEllipsis) || allQuotes.includes(nextChar))) {
                                     let shouldSplit = true;
+                                    const hasNewline = /^\s*[\r\n]/.test(rest);
 
                                     if (/^["'“「『](?:\s+|…+|\.+)[^.!?…]{1,15}[.!?…]+["”」』]*$/.test(current.trim())) {
                                         shouldSplit = false;
                                     }
 
                                     if (shouldSplit && !allQuotes.includes(nextChar)) {
-                                        if (/[\p{L}\p{N}]/u.test(nextChar)) {
+                                        if (hasNewline) {
+                                            shouldSplit = true;
+                                        } else if (/[\p{L}\p{N}]/u.test(nextChar)) {
                                             shouldSplit = false;
                                         } else {
                                             const match = rest.match(/([.,;:!?…，；：])/);
@@ -267,27 +284,22 @@ const splitIntoSentences = (text) => {
                     let trailingQuotes = '';
                     while (i < seg.length) {
                         const nextCh = seg[i];
-                        if (nextCh === '"' && openQuoteIndices.has(i)) {
-                            break;
-                        }
-                        if (nextCh === '"' && !closeQuoteIndices.has(i)) {
+                        if (nextCh === '"' && pairedOpenIndices.has(i)) break;
+                        if (nextCh === '"' && !pairedCloseIndices.has(i)) {
                             const afterQuote = seg.slice(i + 1);
-                            if (/^[\p{L}\p{N}]/u.test(afterQuote)) {
-                                break;
-                            }
+                            if (/^[\p{L}\p{N}]/u.test(afterQuote)) break;
                         }
                         if (/["'”」』]/.test(nextCh)) {
                             trailingQuotes += nextCh;
                             i++;
-                        } else {
-                            break;
-                        }
+                        } else break;
                     }
 
                     const fullCurrent = tempCurrent + trailingQuotes;
                     const rest = seg.slice(i);
-
                     let canSplit = true;
+                    const hasNewline = /^\s*[\r\n]/.test(rest);
+
                     if (trailingQuotes.length > 0) {
                         canSplit = (!hasOuterWords || startedWithQuote);
                         const nextNonSpaceMatch = rest.match(/^\s*(.)/);
@@ -297,23 +309,23 @@ const splitIntoSentences = (text) => {
                                 let reallyOpen = true;
                                 if (nextChar === '"') {
                                     const nextCharIndex = i + rest.indexOf('"');
-                                    if (!openQuoteIndices.has(nextCharIndex)) reallyOpen = false;
+                                    if (!pairedOpenIndices.has(nextCharIndex)) reallyOpen = false;
                                 }
                                 if (reallyOpen) canSplit = true;
                             }
                         }
 
                         let isAttachedCloseQuote = closeQuotes.includes(rest[0]);
-                        if (rest[0] === '"' && openQuoteIndices.has(i)) {
+                        if (rest[0] === '"' && pairedOpenIndices.has(i)) {
                             isAttachedCloseQuote = false;
                         }
 
-                        if (/^[\p{L}\p{N}]/u.test(rest) || isAttachedCloseQuote) {
-                            canSplit = false;
-                        }
+                        if (/^[\p{L}\p{N}]/u.test(rest) || isAttachedCloseQuote) canSplit = false;
 
                         if (canSplit) {
-                            if (nextNonSpaceMatch && !allQuotes.includes(nextNonSpaceMatch[1])) {
+                            if (hasNewline) {
+                                canSplit = true;
+                            } else if (nextNonSpaceMatch && !allQuotes.includes(nextNonSpaceMatch[1])) {
                                 const match = rest.match(/([.,;:!?…，；：])/);
                                 if (match && [',', ';', ':', '，', '；', '：'].includes(match[1])) {
                                     canSplit = false;
@@ -322,35 +334,22 @@ const splitIntoSentences = (text) => {
                         }
                     }
 
-                    if (/^["'“「『](?:\s+|…+|\.+)?[^.!?…]{1,15}[.!?…]+["”」』]*$/.test(fullCurrent.trim())) {
-                        canSplit = false;
-                    }
-
-                    if (/^["'“「『\-\s.!?…]+$/.test(fullCurrent.trim())) {
-                        canSplit = false;
-                    }
+                    if (/^["'“「『](?:\s+|…+|\.+)?[^.!?…]{1,15}[.!?…]+["”」』]*$/.test(fullCurrent.trim())) canSplit = false;
+                    if (/^["'“「『\-\s.!?…]+$/.test(fullCurrent.trim())) canSplit = false;
 
                     const isUnicodeEllipsisOnly = /^\u2026+$/.test(punct);
                     let upperCheck = false;
 
                     if (isUnicodeEllipsisOnly) {
-                        if (isUpperishStartAfterSpace(rest)) {
-                            upperCheck = true;
-                        } else if (isUpperishStart(rest)) {
-                            if (!current.endsWith(' ')) {
-                                upperCheck = true;
-                            }
+                        if (isUpperishStartAfterSpace(rest)) upperCheck = true;
+                        else if (isUpperishStart(rest)) {
+                            if (!current.endsWith(' ')) upperCheck = true;
                         }
-                    } else {
-                        upperCheck = isUpperishStart(rest);
-                    }
+                    } else upperCheck = isUpperishStart(rest);
 
-                    // --- FIX 2: Đổi \p{L} thành \p{Ll} để cho phép bẻ câu nếu chữ dính liền là Chữ Hoa ---
-                    if (/^[\p{Ll}\p{N}]/u.test(rest) && !isAttachedCloseQuote) {
-                        canSplit = false;
-                    }
+                    if (/^[\p{Ll}\p{N}]/u.test(rest) && !isAttachedCloseQuote) canSplit = false;
 
-                    if (canSplit && (rest.trim().length === 0 || upperCheck)) {
+                    if (canSplit && (rest.trim().length === 0 || upperCheck || hasNewline)) {
                         results.push(fullCurrent.trim());
                         current = '';
                         hasOuterWords = false;
@@ -373,14 +372,9 @@ const splitIntoSentences = (text) => {
         return results;
     };
 
-    // --- ĐOẠN CODE HIỆN TẠI CỦA BẠN (Lấy mảng raw ban đầu) ---
     const rawSentences = splitSegment(text)
         .map(s => s.replace(/^[\s\u3164\u200B]+|[\s\u3164\u200B]+$/g, ''))
         .filter(s => s.replace(/["“”「」『』'.,!?…\-\s\u3164\u200B]/g, '').length > 0);
-
-    // ========================================================
-    // --- TẦNG LOOK-BACK TỐI ƯU SỬA LỖI ANOMALY (DÍNH CHỮ) ---
-    // ========================================================
 
     const splitAnomaly = (anomalyText) => {
         let subResults = [];
@@ -390,7 +384,6 @@ const splitIntoSentences = (text) => {
         let parenthesisLevel = 0;
         let squareBracketLevel = 0;
 
-        // Hàm kiểm tra ký tự viết hoa (hỗ trợ chuẩn cả tiếng Việt có dấu)
         const isUpperish = (ch) => {
             if (!ch) return false;
             return ch === ch.toUpperCase() && ch !== ch.toLowerCase();
@@ -400,13 +393,11 @@ const splitIntoSentences = (text) => {
             const ch = anomalyText[i];
             current += ch;
 
-            // Theo dõi trạng thái đóng/mở của ngoặc tròn và ngoặc vuông
             if (ch === '(') parenthesisLevel++;
             else if (ch === ')') parenthesisLevel = Math.max(0, parenthesisLevel - 1);
             else if (ch === '[') squareBracketLevel++;
             else if (ch === ']') squareBracketLevel = Math.max(0, squareBracketLevel - 1);
 
-            // CHIẾN LƯỢC: Chỉ bẻ câu tại dấu chấm đơn '.' để không làm hỏng hội thoại (?/!)
             if (ch === '.') {
                 let isEllipsis = false;
                 if ((i > 0 && anomalyText[i - 1] === '.') || (i + 1 < anomalyText.length && anomalyText[i + 1] === '.')) {
@@ -414,9 +405,7 @@ const splitIntoSentences = (text) => {
                 }
 
                 if (!isEllipsis) {
-                    // Nuốt các dấu ngoặc đóng đi liền sau dấu câu.
-                    // Loại bỏ ']' khỏi danh sách nuốt để bảo vệ Test 60, 61.
-                    while (i + 1 < anomalyText.length && /[”」』]/.test(anomalyText[i + 1])) {
+                    while (i + 1 < anomalyText.length && /["'”」』]/.test(anomalyText[i + 1])) {
                         i++;
                         const nextCh = anomalyText[i];
                         current += nextCh;
@@ -427,27 +416,27 @@ const splitIntoSentences = (text) => {
                     const rest = anomalyText.slice(i + 1);
                     const trimmedRest = rest.trim();
 
-                    // ĐIỀU KIỆN TIÊN QUYẾT: Đang đứng ngoài cấu trúc ngoặc () và []
                     if (parenthesisLevel === 0 && squareBracketLevel === 0) {
                         let isStartOfNew = false;
 
-                        if (trimmedRest.length > 0) {
+                        if (trimmedRest.length > 0 && !isAbbreviation(current)) {
                             const firstChar = trimmedRest[0];
 
-                            // TRƯỜNG HỢP 1: Chữ hoa dính sát dấu câu (Không có khoảng trắng)
-                            // VD: nóng.Hứa -> Bẻ câu! | phong. Đương -> Có khoảng trắng -> Không bẻ!
-                            if (!/^\s/.test(rest) && isUpperish(firstChar)) {
-                                isStartOfNew = true;
+                            if (isUpperish(firstChar)) {
+                                const endsWithQuote = /["'”」』]$/.test(current.trim());
+                                if (endsWithQuote) {
+                                    if (/^\s*[\r\n]/.test(rest) || /^["'“「『]/.test(firstChar)) {
+                                        isStartOfNew = true;
+                                    }
+                                } else {
+                                    isStartOfNew = true;
+                                }
                             }
-                            // TRƯỜNG HỢP 2: Dính ngoặc kép mở + chữ hoa 
-                            // (Cho phép có khoảng trắng vì bộ normalizer ở đầu file có thể tự động thêm vào)
-                            // VD: mở miệng. "Tại sao?"
                             else if (/^["'“「『]/.test(firstChar) && trimmedRest.length > 1 && isUpperish(trimmedRest[1])) {
                                 isStartOfNew = true;
                             }
                         }
 
-                        // Nếu thỏa mãn, tiến hành bẻ gãy khối văn bản
                         if (isStartOfNew) {
                             subResults.push(current.trim());
                             current = '';
@@ -462,12 +451,9 @@ const splitIntoSentences = (text) => {
         return subResults;
     };
 
-    // Duyệt qua mảng kết quả thô để tìm kiếm Anomaly
     const finalSentences = [];
     for (const s of rawSentences) {
-        // Regex siêu chọn lọc: Chỉ quét các khối văn bản chứa dấu chấm đi kèm chữ viết hoa hoặc ngoặc kép dính chữ
         const hasInternalDotBoundary = /\.["'”」』]*(?:[\p{Lu}]|\s*["'“「『][\p{Lu}])/u.test(s);
-
         if (s.length > 250 && hasInternalDotBoundary) {
             const fixedSubSentences = splitAnomaly(s);
             finalSentences.push(...fixedSubSentences);
@@ -995,9 +981,9 @@ const tests = [
     },
     {
         label: 'Test 72',
-        input: `"Bánh bao có ba cái, cầm trong tay rất nóng.Hứa Thanh do dự một chút, thấy mọi người bên cạnh đống lửa cũng đang ăn bánh bao giống nhau, vì thế đầu tiên là giả vờ ăn một miếng, quan sát những Thập Hoang giả kia, một lúc lâu sau phát hiện bọn họ vẫn như thường, hắn nhịn thật lâu, mới thật sự ăn một ngụm nhỏ, ngậm trong miệng chờ một lát.Xác định không có gì đáng ngại, lúc này mới chậm rãi nhai cho đến khi vỡ vụn, chậm rãi nuốt xuống.Lại đợi hồi lâu, sau khi lần thứ hai xác định không có gì đáng ngại, đáy lòng hắn thở phào nhẹ nhõm, rốt cuộc nhịn không được, cắn ăn từng ngụm. Tiếp theo hắn chần chờ một chút, lại từng ngụm từng ngụm nhỏ đem cái thứ hai cũng ăn xuống.Mặc dù bụng vẫn còn đói, nhưng hắn vẫn bọc lại cái bánh bao cuối cùng, cẩn thận đặt vào trong túi da của mình, giống như đặt kho báu.Rất nhanh sắc trời càng tối, Thập Hoang giả cũng lục tục trở lại trong lều trại, Lôi Đội giống như hôm qua, đem túi ngủ kia đưa cho hắn, trước khi đi nói một câu."Tặng ngươi.” Hứa Thanh ngẩng đầu, nhìn Lôi Đội, bỗng nhiên mở miệng."Tại sao?" "Tại sao cái gì mà tại sao? Ba cái bánh bao, một cái túi ngủ sao...!Không có tại sao, nếu ngươi có tâm, sau này cũng cho ta chút thức ăn là được.`,
+        input: `"""Bánh bao có ba cái, cầm trong tay rất nóng.Hứa Thanh do dự một chút, thấy mọi người bên cạnh đống lửa cũng đang ăn bánh bao giống nhau, vì thế đầu tiên là giả vờ ăn một miếng, quan sát những Thập Hoang giả kia, một lúc lâu sau phát hiện bọn họ vẫn như thường, hắn nhịn thật lâu, mới thật sự ăn một ngụm nhỏ, ngậm trong miệng chờ một lát.Xác định không có gì đáng ngại, lúc này mới chậm rãi nhai cho đến khi vỡ vụn, chậm rãi nuốt xuống.Lại đợi hồi lâu, sau khi lần thứ hai xác định không có gì đáng ngại, đáy lòng hắn thở phào nhẹ nhõm, rốt cuộc nhịn không được, cắn ăn từng ngụm. Tiếp theo hắn chần chờ một chút, lại từng ngụm từng ngụm nhỏ đem cái thứ hai cũng ăn xuống.Mặc dù bụng vẫn còn đói, nhưng hắn vẫn bọc lại cái bánh bao cuối cùng, cẩn thận đặt vào trong túi da của mình, giống như đặt kho báu.Rất nhanh sắc trời càng tối, Thập Hoang giả cũng lục tục trở lại trong lều trại, Lôi Đội giống như hôm qua, đem túi ngủ kia đưa cho hắn, trước khi đi nói một câu."Tặng ngươi.” Hứa Thanh ngẩng đầu, nhìn Lôi Đội, bỗng nhiên mở miệng."Tại sao?" "Tại sao cái gì mà tại sao? Ba cái bánh bao, một cái túi ngủ sao...!Không có tại sao, nếu ngươi có tâm, sau này cũng cho ta chút thức ăn là được.`,
         expected: [
-            '"Bánh bao có ba cái, cầm trong tay rất nóng.',
+            '"" "Bánh bao có ba cái, cầm trong tay rất nóng.',
             'Hứa Thanh do dự một chút, thấy mọi người bên cạnh đống lửa cũng đang ăn bánh bao giống nhau, vì thế đầu tiên là giả vờ ăn một miếng, quan sát những Thập Hoang giả kia, một lúc lâu sau phát hiện bọn họ vẫn như thường, hắn nhịn thật lâu, mới thật sự ăn một ngụm nhỏ, ngậm trong miệng chờ một lát.',
             'Xác định không có gì đáng ngại, lúc này mới chậm rãi nhai cho đến khi vỡ vụn, chậm rãi nuốt xuống.',
             'Lại đợi hồi lâu, sau khi lần thứ hai xác định không có gì đáng ngại, đáy lòng hắn thở phào nhẹ nhõm, rốt cuộc nhịn không được, cắn ăn từng ngụm.',
@@ -1011,7 +997,114 @@ const tests = [
             'Không có tại sao, nếu ngươi có tâm, sau này cũng cho ta chút thức ăn là được.'
         ]
     },
-
+    {
+        label: 'Test 73',
+        input: `""Không đi cấm khu? Muốn sống sót ở cái thế giới quỷ quái này, muốn sống tốt hơn một chút, nhất định phải đi vào cấm khu liều mạng, sớm muộn gì ta cũng sẽ mua một quyền cư trú của Thất Huyết Đồng phân thành! "Ra tới bên ngoài cấm khu, tâm tình của những Thập Hoang giả này hiển nhiên là nhẹ nhàng hơn không ít, bắt đầu lời qua tiếng lại.Hứa Thanh im lặng không lên tiếng, nhưng nghe rất cẩn thận, dọc theo đường đi, hắn nghe những người này nói chuyện, đã biết được rất nhiều tin tức trước kia không tiếp xúc được.Tỷ như Thất Huyết Đồng này, hắn đã nghe những Thập Hoang giả này nhiều lần nhắc tới, tựa hồ đó là một thế lực rất cường đại.Còn có cái tên Tử Thổ này, cũng được bọn họ nhắc tới mấy lần."Ngươi chỉ có chút chí khí này?Trong Thất Huyết Đồng phân thành ,chính là Lộc Giác Thành xếp thứ nhất , nhưng tư cách sống ở nơi đó không phải ngươi có đủ linh tệ là có thể mua, mà còn cần được đệ tử Thất Huyết Đồng đề cử, huống hồ quyền cư trú ở nơi đó thì tính là cái gì, mục tiêu của ta là đạt được tư cách nhập môn của Thất Huyết Đồng, trở thành đệ tử Thất Huyết Đồng!”“Ngươi đi Thất Huyết Đồng, sống không quá ba ngày, bốc phét ai cũng biết , sao ngươi không nói mục tiêu của ngươi là đi hải ngoại Vọng Cổ đại lục, nơi đó còn có nguồn gốc của nhân tộc đấy.`,
+        expected: [
+            '""Không đi cấm khu? Muốn sống sót ở cái thế giới quỷ quái này, muốn sống tốt hơn một chút, nhất định phải đi vào cấm khu liều mạng, sớm muộn gì ta cũng sẽ mua một quyền cư trú của Thất Huyết Đồng phân thành!" Ra tới bên ngoài cấm khu, tâm tình của những Thập Hoang giả này hiển nhiên là nhẹ nhàng hơn không ít, bắt đầu lời qua tiếng lại.',
+            'Hứa Thanh im lặng không lên tiếng, nhưng nghe rất cẩn thận, dọc theo đường đi, hắn nghe những người này nói chuyện, đã biết được rất nhiều tin tức trước kia không tiếp xúc được.',
+            'Tỷ như Thất Huyết Đồng này, hắn đã nghe những Thập Hoang giả này nhiều lần nhắc tới, tựa hồ đó là một thế lực rất cường đại.',
+            'Còn có cái tên Tử Thổ này, cũng được bọn họ nhắc tới mấy lần.',
+            '“Ngươi chỉ có chút chí khí này?Trong Thất Huyết Đồng phân thành ,chính là Lộc Giác Thành xếp thứ nhất , nhưng tư cách sống ở nơi đó không phải ngươi có đủ linh tệ là có thể mua, mà còn cần được đệ tử Thất Huyết Đồng đề cử, huống hồ quyền cư trú ở nơi đó thì tính là cái gì, mục tiêu của ta là đạt được tư cách nhập môn của Thất Huyết Đồng, trở thành đệ tử Thất Huyết Đồng!”',
+            '“Ngươi đi Thất Huyết Đồng, sống không quá ba ngày, bốc phét ai cũng biết , sao ngươi không nói mục tiêu của ngươi là đi hải ngoại Vọng Cổ đại lục, nơi đó còn có nguồn gốc của nhân tộc đấy.'
+        ]
+    },
+    {
+        label: 'Test 74',
+        input: `Hứa Thanh nghe đến đó, nội tâm khẽ động, hắn ở trên thẻ tre đã nhìn thấy cái tên Vọng Cổ này,"Vọng Cổ? Nếu lão tử có bản lĩnh không cần đếm xỉa đến những vật cấm kỵ trong biển kia, ngươi nghĩ xem, ta có đi hay không? "Hai người trong nhóm Thập Hoang giả dường như có chút xung đột ngôn ngữ, bắt đầu xỉa xói lẫn nhau.Hứa Thanh dựng thẳng lỗ tai, đang muốn tiếp tục nghe bọn họ đối thoại để thu thập tin tức, lão giả Lôi Đội ở một bên, liếc mắt quét qua hai người kia một cái, dọc theo đường đi lần đầu tiên mở miệng, truyền ra lời nói.“Muốn đi Vọng Cổ đại lục, cũng không phải không có khả năng, phương pháp có bốn, các ngươi có thể ngẫm lại, xem cái nào thích hợp với bản thân.`,
+        expected: []
+    },
+    {
+        label: 'Test 75',
+        input: `""Không đi cấm khu? Muốn sống sót ở cái thế giới quỷ quái này, muốn sống tốt hơn một chút, nhất định phải đi vào cấm khu liều mạng, sớm muộn gì ta cũng sẽ mua một quyền cư trú của Thất Huyết Đồng phân thành! "Ra tới bên ngoài cấm khu, tâm tình của những Thập Hoang giả này hiển nhiên là nhẹ nhàng hơn không ít, bắt đầu lời qua tiếng lại.Hứa Thanh im lặng không lên tiếng, nhưng nghe rất cẩn thận, dọc theo đường đi, hắn nghe những người này nói chuyện, đã biết được rất nhiều tin tức trước kia không tiếp xúc được.Tỷ như Thất Huyết Đồng này, hắn đã nghe những Thập Hoang giả này nhiều lần nhắc tới, tựa hồ đó là một thế lực rất cường đại.Còn có cái tên Tử Thổ này, cũng được bọn họ nhắc tới mấy lần."Ngươi chỉ có chút chí khí này?Trong Thất Huyết Đồng phân thành ,chính là Lộc Giác Thành xếp thứ nhất , nhưng tư cách sống ở nơi đó không phải ngươi có đủ linh tệ là có thể mua, mà còn cần được đệ tử Thất Huyết Đồng đề cử, huống hồ quyền cư trú ở nơi đó thì tính là cái gì, mục tiêu của ta là đạt được tư cách nhập môn của Thất Huyết Đồng, trở thành đệ tử Thất Huyết Đồng!”“Ngươi đi Thất Huyết Đồng, sống không quá ba ngày, bốc phét ai cũng biết , sao ngươi không nói mục tiêu của ngươi là đi hải ngoại Vọng Cổ đại lục, nơi đó còn có nguồn gốc của nhân tộc đấy.`,
+        expected: []
+    },
+    {
+        label: 'Test 76',
+        input: 'Anh ta hét lớn: "Đứng lại đó cho ta! Ngươi không được chạy.',
+        expected: [
+            'Anh ta hét lớn: "Đứng lại đó cho ta!',
+            'Ngươi không được chạy.'
+        ]
+    },
+    {
+        label: 'Test 77',
+        input: 'Ngươi không thoát được đâu!" Hắn cười lạnh lùng.',
+        expected: [
+            'Ngươi không thoát được đâu!"',
+            'Hắn cười lạnh lùng.'
+        ]
+    },
+    {
+        label: 'Test 78',
+        input: 'Hôm nay là một ngày tồi tệ.” Cô gái vừa khóc vừa nói. Sau đó cô quay lưng bước đi.',
+        expected: [
+            'Hôm nay là một ngày tồi tệ.”',
+            'Cô gái vừa khóc vừa nói.',
+            'Sau đó cô quay lưng bước đi.'
+        ]
+    },
+    {
+        label: 'Test 79',
+        input: '“Ta sẽ không bao giờ bỏ cuộc! Dù cho có chuyện gì xảy ra đi chăng nữa.',
+        expected: [
+            '“Ta sẽ không bao giờ bỏ cuộc!',
+            'Dù cho có chuyện gì xảy ra đi chăng nữa.'
+        ]
+    },
+    {
+        label: 'Test 80',
+        input: 'Vị trưởng lão trầm ngâm: "Nó đã nói với ta rằng \'Ta sẽ trở lại\'. Nhưng đã 10 năm rồi.',
+        expected: [
+            'Vị trưởng lão trầm ngâm: "Nó đã nói với ta rằng \'Ta sẽ trở lại\'.',
+            'Nhưng đã 10 năm rồi.'
+        ]
+    },
+    {
+        label: 'Test 81',
+        input: 'Người đàn ông đi tới, giận dữ quát: "Khốn khiếp, ai đã làm chuyện này! Cả đám người im lặng không dám ho he. Một lúc sau, một đứa trẻ khẽ lên tiếng: "Là con."',
+        expected: [
+            'Người đàn ông đi tới, giận dữ quát: "Khốn khiếp, ai đã làm chuyện này!',
+            'Cả đám người im lặng không dám ho he.',
+            'Một lúc sau, một đứa trẻ khẽ lên tiếng: "Là con."'
+        ]
+    },
+    {
+        label: 'Test 82',
+        input: '“Xin lỗi, ta đến muộn. Giao thông hôm nay thật kinh khủng. Cô nương gật đầu: "Không sao, ta cũng vừa mới tới.',
+        expected: [
+            '“Xin lỗi, ta đến muộn.',
+            'Giao thông hôm nay thật kinh khủng.',
+            'Cô nương gật đầu: "Không sao, ta cũng vừa mới tới.'
+        ]
+    },
+    {
+        label: 'Test 83',
+        input: 'Hắn thầm nghĩ: "Có lẽ nào... bí mật đó đã bị lộ? Không thể nào, chỉ có mình ta biết. Hắn toát mồ hôi lạnh.',
+        expected: [
+            'Hắn thầm nghĩ: "Có lẽ nào... bí mật đó đã bị lộ?',
+            'Không thể nào, chỉ có mình ta biết.',
+            'Hắn toát mồ hôi lạnh.'
+        ]
+    },
+    {
+        label: 'Test 84',
+        input: 'PGS. Trần Văn nói: "Dự án này rất quan trọng. Chúng ta cần hoàn thành nó đúng hạn.',
+        expected: [
+            'PGS. Trần Văn nói: "Dự án này rất quan trọng.',
+            'Chúng ta cần hoàn thành nó đúng hạn.'
+        ]
+    },
+    {
+        label: 'Test 85',
+        input: 'Thật nực cười! Ngươi nghĩ ngươi là ai mà dám ra lệnh cho ta? Ngươi chỉ là một tên nhãi ranh.” Hắn hừ lạnh: “Chờ xem, ta sẽ cho ngươi biết tay.',
+        expected: [
+            'Thật nực cười!',
+            'Ngươi nghĩ ngươi là ai mà dám ra lệnh cho ta?',
+            'Ngươi chỉ là một tên nhãi ranh.”',
+            'Hắn hừ lạnh: “Chờ xem, ta sẽ cho ngươi biết tay.'
+        ]
+    }
 ];
 
 tests.forEach(t => {
