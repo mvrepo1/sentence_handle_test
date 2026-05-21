@@ -379,44 +379,85 @@ const splitIntoSentences = (text) => {
         .filter(s => s.replace(/["“”「」『』'.,!?…\-\s\u3164\u200B]/g, '').length > 0);
 
     // ========================================================
-    // --- THÊM TẦNG LOOK-BACK PHÁT HIỆN VÀ SỬA LỖI ANOMALY ---
+    // --- TẦNG LOOK-BACK TỐI ƯU SỬA LỖI ANOMALY (DÍNH CHỮ) ---
     // ========================================================
 
-    // Hàm phụ trợ bẻ nhỏ các câu bị nuốt do lỗi ngoặc kép
     const splitAnomaly = (anomalyText) => {
         let subResults = [];
         let current = '';
         let i = 0;
 
+        let parenthesisLevel = 0;
+        let squareBracketLevel = 0;
+
+        // Hàm kiểm tra ký tự viết hoa (hỗ trợ chuẩn cả tiếng Việt có dấu)
+        const isUpperish = (ch) => {
+            if (!ch) return false;
+            return ch === ch.toUpperCase() && ch !== ch.toLowerCase();
+        };
+
         while (i < anomalyText.length) {
             const ch = anomalyText[i];
             current += ch;
 
-            if (/[.!?…]/.test(ch)) {
-                // 1. Nuốt hết nhóm dấu câu liên tiếp nếu có (vd: ... hoặc !!!)
-                while (i + 1 < anomalyText.length && /[.!?…]/.test(anomalyText[i + 1])) {
-                    i++;
-                    current += anomalyText[i];
+            // Theo dõi trạng thái đóng/mở của ngoặc tròn và ngoặc vuông
+            if (ch === '(') parenthesisLevel++;
+            else if (ch === ')') parenthesisLevel = Math.max(0, parenthesisLevel - 1);
+            else if (ch === '[') squareBracketLevel++;
+            else if (ch === ']') squareBracketLevel = Math.max(0, squareBracketLevel - 1);
+
+            // CHIẾN LƯỢC: Chỉ bẻ câu tại dấu chấm đơn '.' để không làm hỏng hội thoại (?/!)
+            if (ch === '.') {
+                let isEllipsis = false;
+                if ((i > 0 && anomalyText[i - 1] === '.') || (i + 1 < anomalyText.length && anomalyText[i + 1] === '.')) {
+                    isEllipsis = true;
                 }
 
-                // 2. QUAN TRỌNG: Nuốt tiếp các dấu ngoặc đóng đi liền liền sau dấu câu (vd: .” hoặc .")
-                // Điều này giúp giữ nguyên vẹn các câu thoại chuẩn như “Tặng ngươi.” mà không làm rách ngoặc
-                while (i + 1 < anomalyText.length && /["'”」』]/.test(anomalyText[i + 1])) {
-                    i++;
-                    current += anomalyText[i];
-                }
+                if (!isEllipsis) {
+                    // Nuốt các dấu ngoặc đóng đi liền sau dấu câu.
+                    // Loại bỏ ']' khỏi danh sách nuốt để bảo vệ Test 60, 61.
+                    while (i + 1 < anomalyText.length && /[”」』]/.test(anomalyText[i + 1])) {
+                        i++;
+                        const nextCh = anomalyText[i];
+                        current += nextCh;
+                        if (nextCh === ')') parenthesisLevel = Math.max(0, parenthesisLevel - 1);
+                        else if (nextCh === ']') squareBracketLevel = Math.max(0, squareBracketLevel - 1);
+                    }
 
-                const rest = anomalyText.slice(i + 1);
-                if (rest.trim().length > 0) {
-                    // Kiểm tra xem phần văn bản kế tiếp có bắt đầu bằng chữ viết hoa không
-                    if (isUpperishStart(rest)) {
-                        subResults.push(current.trim());
-                        current = '';
+                    const rest = anomalyText.slice(i + 1);
+                    const trimmedRest = rest.trim();
+
+                    // ĐIỀU KIỆN TIÊN QUYẾT: Đang đứng ngoài cấu trúc ngoặc () và []
+                    if (parenthesisLevel === 0 && squareBracketLevel === 0) {
+                        let isStartOfNew = false;
+
+                        if (trimmedRest.length > 0) {
+                            const firstChar = trimmedRest[0];
+
+                            // TRƯỜNG HỢP 1: Chữ hoa dính sát dấu câu (Không có khoảng trắng)
+                            // VD: nóng.Hứa -> Bẻ câu! | phong. Đương -> Có khoảng trắng -> Không bẻ!
+                            if (!/^\s/.test(rest) && isUpperish(firstChar)) {
+                                isStartOfNew = true;
+                            }
+                            // TRƯỜNG HỢP 2: Dính ngoặc kép mở + chữ hoa 
+                            // (Cho phép có khoảng trắng vì bộ normalizer ở đầu file có thể tự động thêm vào)
+                            // VD: mở miệng. "Tại sao?"
+                            else if (/^["'“「『]/.test(firstChar) && trimmedRest.length > 1 && isUpperish(trimmedRest[1])) {
+                                isStartOfNew = true;
+                            }
+                        }
+
+                        // Nếu thỏa mãn, tiến hành bẻ gãy khối văn bản
+                        if (isStartOfNew) {
+                            subResults.push(current.trim());
+                            current = '';
+                        }
                     }
                 }
             }
             i++;
         }
+
         if (current.trim()) subResults.push(current.trim());
         return subResults;
     };
@@ -424,11 +465,10 @@ const splitIntoSentences = (text) => {
     // Duyệt qua mảng kết quả thô để tìm kiếm Anomaly
     const finalSentences = [];
     for (const s of rawSentences) {
-        // Điều kiện tìm Anomaly: Dài > 250 ký tự VÀ có dấu kết thúc câu kèm chữ viết hoa ở giữa chuỗi
-        const hasInternalBoundary = /[.!?…]\s*["'“「『\-]*[\p{Lu}\p{N}]/u.test(s);
+        // Regex siêu chọn lọc: Chỉ quét các khối văn bản chứa dấu chấm đi kèm chữ viết hoa hoặc ngoặc kép dính chữ
+        const hasInternalDotBoundary = /\.["'”」』]*(?:[\p{Lu}]|\s*["'“「『][\p{Lu}])/u.test(s);
 
-        if (s.length > 250 && hasInternalBoundary) {
-            // Kích hoạt bộ cứu hộ giải cứu khối text bị nuốt chửng
+        if (s.length > 250 && hasInternalDotBoundary) {
             const fixedSubSentences = splitAnomaly(s);
             finalSentences.push(...fixedSubSentences);
         } else {
