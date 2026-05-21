@@ -1,12 +1,294 @@
+// const splitIntoSentences = (text) => {
+//     if (!text || typeof text !== 'string') return [];
+//     text = text.replace(/\\\[/g, '[').replace(/\\\]/g, ']');
+
+//     // --- THÊM ĐOẠN NÀY ĐỂ FIX LỖI NGOẶC LỆCH ---
+//     // Tìm mở ngoặc cong nhưng đóng ngoặc thẳng (VD: “Vịnh mai") -> Đổi thành “Vịnh mai”
+//     text = text.replace(/“([^”]*?)"/g, '“$1”');
+
+//     // Tìm mở ngoặc thẳng nhưng đóng ngoặc cong (VD: "Vịnh mai”) -> Đổi thành “Vịnh mai”
+//     text = text.replace(/"([^“]*?)”/g, '“$1”');
+//     // -------------------------------------------
+
+//     const openQuotes = ['"', '“', '「', '『'];
+//     const closeQuotes = ['"', '”', '」', '』'];
+//     const allQuotes = [...openQuotes, ...closeQuotes];
+
+//     // Danh sách từ viết tắt phổ biến
+//     const abbreviations = [
+//         'Mr', 'Mrs', 'Ms', 'Miss', 'Dr', 'Prof', 'St', 'Jr', 'Sr',
+//         'Rev', 'Lt', 'Capt', 'Col', 'Gen', 'Sgt', 'Cpl', 'Pvt', 'Gov',
+//         'GS', 'PGS', 'TS', 'ThS', 'BS', 'KS', 'LS', 'Tp', 'TP'
+//     ];
+
+//     // const isUpperishStart = (str) => /^["'“「『\-\s]*[\p{Lu}]/u.test(str);
+//     // const isUpperishStartAfterSpace = (str) =>
+//     //     /^["'"\u300c\u300e\-]*\s+["'"\u300c\u300e\-\s]*[\p{Lu}]/u.test(str);
+
+//     const isUpperishStart = (str) =>
+//         /^["'“「『\-\s\u3164\u200B]*([\p{Lu}\p{N}]|[({\[<][\p{L}\p{N}]+[)}\]>])/u.test(str);
+
+//     const isUpperishStartAfterSpace = (str) =>
+//         /^["'“「『\-]*[\s\u3164\u200B]+["'“「『\-\s\u3164\u200B]*([\p{Lu}\p{N}]|[({\[<][\p{L}\p{N}]+[)}\]>])/u.test(str);
+
+//     const isAbbreviation = (buffer) => {
+//         const trimmed = buffer.trim().replace(/[.!?…]+$/, '');
+//         const words = trimmed.split(/[\s\.]+/);
+//         const lastWord = words[words.length - 1];
+//         return abbreviations.includes(lastWord);
+//     };
+
+//     const countChar = (str, char) => {
+//         let count = 0;
+//         for (let i = 0; i < str.length; i++) if (str[i] === char) count++;
+//         return count;
+//     };
+
+//     const specialPairs = { '“': '”', '「': '」', '『': '』' };
+//     const unbalanced = {};
+
+//     for (const [open, close] of Object.entries(specialPairs)) {
+//         if (countChar(text, open) !== countChar(text, close)) {
+//             unbalanced[open] = true;
+//             unbalanced[close] = true;
+//         }
+//     }
+
+//     const splitSegment = (seg) => {
+//         const results = [];
+//         let current = '';
+//         let quoteLevel = 0;
+//         let hasOuterWords = false;
+//         let startedWithQuote = false;
+//         let i = 0;
+
+//         // Dynamically match valid straight quote pairs
+//         // Ignore empty ("") or space-only ("  ") quotes to prevent parity breakage
+//         const openQuoteIndices = new Set();
+//         const closeQuoteIndices = new Set();
+//         const quoteRegex = /"[^"]*[^\s"][^"]*"/g;
+//         let mMatch;
+//         while ((mMatch = quoteRegex.exec(seg)) !== null) {
+//             openQuoteIndices.add(mMatch.index);
+//             closeQuoteIndices.add(mMatch.index + mMatch[0].length - 1);
+//         }
+
+//         while (i < seg.length) {
+//             const ch = seg[i];
+
+//             if (allQuotes.includes(ch)) {
+//                 if (current.trim().replace(/^[\-\s]+/, '') === '') startedWithQuote = true;
+
+//                 if (ch === '"') {
+//                     if (openQuoteIndices.has(i)) {
+//                         quoteLevel++;
+//                     } else if (closeQuoteIndices.has(i)) {
+//                         quoteLevel = Math.max(0, quoteLevel - 1);
+//                     }
+//                 }
+//                 else if (openQuotes.includes(ch)) {
+//                     if (!unbalanced[ch]) quoteLevel++;
+//                 } else if (closeQuotes.includes(ch)) {
+//                     if (!unbalanced[ch]) quoteLevel = Math.max(0, quoteLevel - 1);
+//                 }
+
+//                 current += ch;
+//                 i++;
+
+//                 if (quoteLevel === 0 && !unbalanced[ch]) {
+//                     const rest = seg.slice(i);
+//                     const nextNonSpaceMatch = rest.match(/^\s*(.)/);
+//                     if (nextNonSpaceMatch) {
+//                         const nextChar = nextNonSpaceMatch[1];
+//                         const endingPunctMatch = current.trimEnd().match(/([.!?…]+)\s*["”」』]+$/);
+
+//                         let canSplitQuote = (!hasOuterWords || startedWithQuote);
+//                         if (endingPunctMatch && !canSplitQuote && openQuotes.includes(nextChar)) {
+//                             let reallyOpen = true;
+//                             if (nextChar === '"') {
+//                                 const nextCharIndex = i + rest.indexOf('"');
+//                                 if (!openQuoteIndices.has(nextCharIndex)) reallyOpen = false;
+//                             }
+//                             if (reallyOpen) canSplitQuote = true;
+//                         }
+
+//                         if (endingPunctMatch && canSplitQuote) {
+//                             const punct = endingPunctMatch[1];
+//                             const isJustEllipsis = /^(\.{2,}|…+)$/.test(punct);
+//                             const textInsideQuote = current.replace(/^["'“「『\-\s]+/, '').replace(/["'”」』\s]+$/, '');
+//                             const hasInternalSentence = /[.!?…]+[\s]+/.test(textInsideQuote);
+
+//                             if ((!hasInternalSentence || allQuotes.includes(nextChar)) && !isAbbreviation(current)) {
+//                                 // Check if the next segment is attached (no space between)
+//                                 let isAttachedCloseQuote = closeQuotes.includes(rest[0]);
+//                                 if (rest[0] === '"' && openQuoteIndices.has(i)) {
+//                                     isAttachedCloseQuote = false;
+//                                 }
+//                                 const isAttachedWord = /^[\p{L}\p{N}]/u.test(rest) || isAttachedCloseQuote;
+
+//                                 if (!isAttachedWord && ((isUpperishStart(rest) && !isJustEllipsis) || allQuotes.includes(nextChar))) {
+//                                     let shouldSplit = true;
+//                                     if (/^["'“「『](?:\s+|…+|\.+)[^.!?…]{1,15}[.!?…]+["”」』]*$/.test(current.trim())) {
+//                                         shouldSplit = false;
+//                                     }
+
+//                                     if (shouldSplit && !allQuotes.includes(nextChar)) {
+//                                         // ÁP DỤNG LOGIC CỦA BẠN: Sau ngoặc kép là chữ/số -> KHÔNG cắt (đoạn trần thuật)
+//                                         if (/[\p{L}\p{N}]/u.test(nextChar)) {
+//                                             shouldSplit = false;
+//                                         } else {
+//                                             const match = rest.match(/([.,;:!?…，；：])/);
+//                                             if (match && [',', ';', ':', '，', '；', '：'].includes(match[1])) {
+//                                                 shouldSplit = false;
+//                                             }
+//                                         }
+//                                     }
+
+//                                     if (shouldSplit) {
+//                                         results.push(current.trim());
+//                                         current = '';
+//                                         hasOuterWords = false;
+//                                         startedWithQuote = false;
+//                                     }
+//                                 }
+//                             }
+//                         }
+//                     }
+//                 }
+//                 continue;
+//             }
+
+//             if (quoteLevel === 0 && /[.!?…]/.test(ch)) {
+//                 let punct = '';
+//                 while (i < seg.length && /[.!?…]/.test(seg[i])) {
+//                     punct += seg[i];
+//                     i++;
+//                 }
+
+//                 const tempCurrent = current + punct;
+
+//                 if (!isAbbreviation(tempCurrent)) {
+//                     let trailingQuotes = '';
+//                     while (i < seg.length) {
+//                         const nextCh = seg[i];
+//                         // Prevent the loop from greedily consuming a straight OPENING quote
+//                         if (nextCh === '"' && openQuoteIndices.has(i)) {
+//                             break;
+//                         }
+
+//                         if (/["'”」』]/.test(nextCh)) {
+//                             trailingQuotes += nextCh;
+//                             i++;
+//                         } else {
+//                             break;
+//                         }
+//                     }
+
+//                     const fullCurrent = tempCurrent + trailingQuotes;
+//                     const rest = seg.slice(i);
+
+//                     let canSplit = true;
+//                     if (trailingQuotes.length > 0) {
+//                         canSplit = (!hasOuterWords || startedWithQuote);
+
+//                         const nextNonSpaceMatch = rest.match(/^\s*(.)/);
+//                         if (!canSplit && nextNonSpaceMatch) {
+//                             const nextChar = nextNonSpaceMatch[1];
+//                             if (openQuotes.includes(nextChar)) {
+//                                 let reallyOpen = true;
+//                                 if (nextChar === '"') {
+//                                     const nextCharIndex = i + rest.indexOf('"');
+//                                     if (!openQuoteIndices.has(nextCharIndex)) reallyOpen = false;
+//                                 }
+//                                 if (reallyOpen) canSplit = true;
+//                             }
+//                         }
+
+//                         let isAttachedCloseQuote = closeQuotes.includes(rest[0]);
+//                         if (rest[0] === '"' && openQuoteIndices.has(i)) {
+//                             isAttachedCloseQuote = false;
+//                         }
+
+//                         // Prevent splitting if there's an attached letter, number, or quote with no leading space
+//                         if (/^[\p{L}\p{N}]/u.test(rest) || isAttachedCloseQuote) {
+//                             canSplit = false;
+//                         }
+
+//                         if (canSplit) {
+//                             if (nextNonSpaceMatch && !allQuotes.includes(nextNonSpaceMatch[1])) {
+//                                 const match = rest.match(/([.,;:!?…，；：])/);
+//                                 if (match && [',', ';', ':', '，', '；', '：'].includes(match[1])) {
+//                                     canSplit = false;
+//                                 }
+//                             }
+//                         }
+//                     }
+
+//                     if (/^["'“「『](?:\s+|…+|\.+)[^.!?…]{1,15}[.!?…]+["”」』]*$/.test(fullCurrent.trim())) {
+//                         canSplit = false;
+//                     }
+
+//                     if (/^["'“「『\-\s.!?…]+$/.test(fullCurrent.trim())) {
+//                         canSplit = false;
+//                     }
+
+//                     // --- FIX: Smarter Ellipsis boundary check ---
+//                     const isUnicodeEllipsisOnly = /^\u2026+$/.test(punct);
+//                     let upperCheck = false;
+
+//                     if (isUnicodeEllipsisOnly) {
+//                         if (isUpperishStartAfterSpace(rest)) {
+//                             upperCheck = true; // Clear sentence boundary with space
+//                         } else if (isUpperishStart(rest)) {
+//                             // If attached without a space, distinguish between a typo missing space
+//                             // ("bố…Trung") and an intended pause ("đoạn …Viêm").
+//                             if (!current.endsWith(' ')) {
+//                                 upperCheck = true;
+//                             }
+//                         }
+//                     } else {
+//                         upperCheck = isUpperishStart(rest);
+//                     }
+//                     // ---------------------------------------------
+
+//                     if (canSplit && (rest.trim().length === 0 || upperCheck)) {
+//                         results.push(fullCurrent.trim());
+//                         current = '';
+//                         hasOuterWords = false;
+//                         startedWithQuote = false;
+//                         continue;
+//                     }
+//                     current = fullCurrent;
+//                     continue;
+//                 }
+//                 current = tempCurrent;
+//                 continue;
+//             }
+
+//             if (quoteLevel === 0 && /[\p{L}\p{N}]/u.test(ch)) hasOuterWords = true;
+//             current += ch;
+//             i++;
+//         }
+
+//         if (current.trim()) results.push(current.trim());
+//         return results;
+//     };
+
+//     // return splitSegment(text)
+//     //     .map(s => s.trim())
+//     //     .filter(s => s.replace(/["“”「」『』'.,!?…\-\s]/g, '').length > 0);
+//     return splitSegment(text)
+//         .map(s => s.replace(/^[\s\u3164\u200B]+|[\s\u3164\u200B]+$/g, ''))
+//         .filter(s => s.replace(/["“”「」『』'.,!?…\-\s\u3164\u200B]/g, '').length > 0);
+// };
+
+
 const splitIntoSentences = (text) => {
     if (!text || typeof text !== 'string') return [];
     text = text.replace(/\\\[/g, '[').replace(/\\\]/g, ']');
 
     // --- THÊM ĐOẠN NÀY ĐỂ FIX LỖI NGOẶC LỆCH ---
-    // Tìm mở ngoặc cong nhưng đóng ngoặc thẳng (VD: “Vịnh mai") -> Đổi thành “Vịnh mai”
     text = text.replace(/“([^”]*?)"/g, '“$1”');
-
-    // Tìm mở ngoặc thẳng nhưng đóng ngoặc cong (VD: "Vịnh mai”) -> Đổi thành “Vịnh mai”
     text = text.replace(/"([^“]*?)”/g, '“$1”');
     // -------------------------------------------
 
@@ -21,13 +303,8 @@ const splitIntoSentences = (text) => {
         'GS', 'PGS', 'TS', 'ThS', 'BS', 'KS', 'LS', 'Tp', 'TP'
     ];
 
-    // const isUpperishStart = (str) => /^["'“「『\-\s]*[\p{Lu}]/u.test(str);
-    // const isUpperishStartAfterSpace = (str) =>
-    //     /^["'"\u300c\u300e\-]*\s+["'"\u300c\u300e\-\s]*[\p{Lu}]/u.test(str);
-
     const isUpperishStart = (str) =>
         /^["'“「『\-\s\u3164\u200B]*([\p{Lu}\p{N}]|[({\[<][\p{L}\p{N}]+[)}\]>])/u.test(str);
-
     const isUpperishStartAfterSpace = (str) =>
         /^["'“「『\-]*[\s\u3164\u200B]+["'“「『\-\s\u3164\u200B]*([\p{Lu}\p{N}]|[({\[<][\p{L}\p{N}]+[)}\]>])/u.test(str);
 
@@ -46,7 +323,6 @@ const splitIntoSentences = (text) => {
 
     const specialPairs = { '“': '”', '「': '」', '『': '』' };
     const unbalanced = {};
-
     for (const [open, close] of Object.entries(specialPairs)) {
         if (countChar(text, open) !== countChar(text, close)) {
             unbalanced[open] = true;
@@ -62,8 +338,6 @@ const splitIntoSentences = (text) => {
         let startedWithQuote = false;
         let i = 0;
 
-        // Dynamically match valid straight quote pairs
-        // Ignore empty ("") or space-only ("  ") quotes to prevent parity breakage
         const openQuoteIndices = new Set();
         const closeQuoteIndices = new Set();
         const quoteRegex = /"[^"]*[^\s"][^"]*"/g;
@@ -94,7 +368,6 @@ const splitIntoSentences = (text) => {
 
                 current += ch;
                 i++;
-
                 if (quoteLevel === 0 && !unbalanced[ch]) {
                     const rest = seg.slice(i);
                     const nextNonSpaceMatch = rest.match(/^\s*(.)/);
@@ -117,23 +390,22 @@ const splitIntoSentences = (text) => {
                             const isJustEllipsis = /^(\.{2,}|…+)$/.test(punct);
                             const textInsideQuote = current.replace(/^["'“「『\-\s]+/, '').replace(/["'”」』\s]+$/, '');
                             const hasInternalSentence = /[.!?…]+[\s]+/.test(textInsideQuote);
-
                             if ((!hasInternalSentence || allQuotes.includes(nextChar)) && !isAbbreviation(current)) {
-                                // Check if the next segment is attached (no space between)
                                 let isAttachedCloseQuote = closeQuotes.includes(rest[0]);
                                 if (rest[0] === '"' && openQuoteIndices.has(i)) {
                                     isAttachedCloseQuote = false;
                                 }
+                        
                                 const isAttachedWord = /^[\p{L}\p{N}]/u.test(rest) || isAttachedCloseQuote;
 
                                 if (!isAttachedWord && ((isUpperishStart(rest) && !isJustEllipsis) || allQuotes.includes(nextChar))) {
                                     let shouldSplit = true;
+        
                                     if (/^["'“「『](?:\s+|…+|\.+)[^.!?…]{1,15}[.!?…]+["”」』]*$/.test(current.trim())) {
                                         shouldSplit = false;
                                     }
 
                                     if (shouldSplit && !allQuotes.includes(nextChar)) {
-                                        // ÁP DỤNG LOGIC CỦA BẠN: Sau ngoặc kép là chữ/số -> KHÔNG cắt (đoạn trần thuật)
                                         if (/[\p{L}\p{N}]/u.test(nextChar)) {
                                             shouldSplit = false;
                                         } else {
@@ -153,7 +425,7 @@ const splitIntoSentences = (text) => {
                                 }
                             }
                         }
-                    }
+                     }
                 }
                 continue;
             }
@@ -166,15 +438,24 @@ const splitIntoSentences = (text) => {
                 }
 
                 const tempCurrent = current + punct;
-
                 if (!isAbbreviation(tempCurrent)) {
                     let trailingQuotes = '';
                     while (i < seg.length) {
                         const nextCh = seg[i];
-                        // Prevent the loop from greedily consuming a straight OPENING quote
+                        
                         if (nextCh === '"' && openQuoteIndices.has(i)) {
                             break;
                         }
+
+                        // --- BẢN FIX MỚI NHẤT (Vượt qua cả Test 42 và Test 57) ---
+                        // Bỏ đi '\s*' để chỉ bẻ ngoặc khi nó bắt đầu bằng chữ/số dính liền không cách.
+                        if (nextCh === '"' && !closeQuoteIndices.has(i)) {
+                            const afterQuote = seg.slice(i + 1);
+                            if (/^[\p{L}\p{N}]/u.test(afterQuote)) {
+                                break;
+                            }
+                        }
+                        // -----------------------------------------------------------
 
                         if (/["'”」』]/.test(nextCh)) {
                             trailingQuotes += nextCh;
@@ -209,7 +490,6 @@ const splitIntoSentences = (text) => {
                             isAttachedCloseQuote = false;
                         }
 
-                        // Prevent splitting if there's an attached letter, number, or quote with no leading space
                         if (/^[\p{L}\p{N}]/u.test(rest) || isAttachedCloseQuote) {
                             canSplit = false;
                         }
@@ -232,16 +512,13 @@ const splitIntoSentences = (text) => {
                         canSplit = false;
                     }
 
-                    // --- FIX: Smarter Ellipsis boundary check ---
                     const isUnicodeEllipsisOnly = /^\u2026+$/.test(punct);
                     let upperCheck = false;
 
                     if (isUnicodeEllipsisOnly) {
                         if (isUpperishStartAfterSpace(rest)) {
-                            upperCheck = true; // Clear sentence boundary with space
+                            upperCheck = true;
                         } else if (isUpperishStart(rest)) {
-                            // If attached without a space, distinguish between a typo missing space
-                            // ("bố…Trung") and an intended pause ("đoạn …Viêm").
                             if (!current.endsWith(' ')) {
                                 upperCheck = true;
                             }
@@ -249,7 +526,6 @@ const splitIntoSentences = (text) => {
                     } else {
                         upperCheck = isUpperishStart(rest);
                     }
-                    // ---------------------------------------------
 
                     if (canSplit && (rest.trim().length === 0 || upperCheck)) {
                         results.push(fullCurrent.trim());
@@ -274,9 +550,6 @@ const splitIntoSentences = (text) => {
         return results;
     };
 
-    // return splitSegment(text)
-    //     .map(s => s.trim())
-    //     .filter(s => s.replace(/["“”「」『』'.,!?…\-\s]/g, '').length > 0);
     return splitSegment(text)
         .map(s => s.replace(/^[\s\u3164\u200B]+|[\s\u3164\u200B]+$/g, ''))
         .filter(s => s.replace(/["“”「」『』'.,!?…\-\s\u3164\u200B]/g, '').length > 0);
@@ -553,7 +826,8 @@ const tests = [
             'Ngày hôm sau, trong một biệt viện của Tần phủ, thành Lăng Vân.',
             '"Hả?"Bỗng chốc một âm thanh kinh ngạc, nghi ngờ vang lên, Tần Ninh tỉnh lại trêи giường.',
             'Nhưng, lúc này trong hai mắt Tần Ninh vẫn còn mơ hồ thấy rõ, vết máu trêи người cũng đã được rửa sạch.',
-            '"Ta… không chết…"Tần Ninh nhìn đôi tay mình, đầu óc cảm thấy khó hiểu."Không đúng, ta…'
+            '"Ta… không chết…"Tần Ninh nhìn đôi tay mình, đầu óc cảm thấy khó hiểu.',
+            '"Không đúng, ta…'
         ]
     },
     {

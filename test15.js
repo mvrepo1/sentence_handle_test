@@ -2,19 +2,17 @@ const splitIntoSentences = (text) => {
     if (!text || typeof text !== 'string') return [];
     text = text.replace(/\\\[/g, '[').replace(/\\\]/g, ']');
 
-    // --- THÊM ĐOẠN NÀY ĐỂ FIX LỖI NGOẶC LỆCH ---
-    // Tìm mở ngoặc cong nhưng đóng ngoặc thẳng (VD: “Vịnh mai") -> Đổi thành “Vịnh mai”
-    text = text.replace(/“([^”]*?)"/g, '“$1”');
+    // --- FIX LỖI THỪA NGOẶC KÉP (VD: "“ hoặc ”") ---
+    // Xóa dấu " hoặc ' nếu nó dính sát ngay trước hoặc ngay sau các ngoặc thông minh
+    text = text.replace(/["']([“「『”」』])/g, '$1');
+    text = text.replace(/([“「『”」』])["']/g, '$1');
 
-    // Tìm mở ngoặc thẳng nhưng đóng ngoặc cong (VD: "Vịnh mai”) -> Đổi thành “Vịnh mai”
-    text = text.replace(/"([^“]*?)”/g, '“$1”');
-    // -------------------------------------------
+    // --- FIX 1: Giới hạn Regex sửa ngoặc để không "nuốt trọn" đoạn dài ---
+    text = text.replace(/“([^”"“]*?)"/g, '“$1”');
+    text = text.replace(/"([^“"”]*?)”/g, '“$1”');
+    // ----------------------------------------------------------------------
 
-    // --- CHUẨN HÓA KHOẢNG TRẮNG QUANH DẤU NGOẶC ---
-    // --- CHUẨN HÓA KHOẢNG TRẮNG QUANH DẤU NGOẶC CHÍNH XÁC (STATE MACHINE) ---
-
-    // Fix nhanh lỗi thiếu khoảng trắng khi dấu chấm câu dính liền chữ (VD: thấp!".Bên -> thấp!". Bên)
-    text = text.replace(/(["”」』][.,;:!?…]+)([\p{L}\p{N}])/gu, '$1 $2');
+    text = text.replace(/(?<=[\p{L}\p{N}.,;:!?…])(["”」』][.,;:!?…]+)([\p{L}\p{N}])/gu, '$1 $2');
 
     let normalizedText = '';
     let skipNextSpaces = false;
@@ -24,7 +22,6 @@ const splitIntoSentences = (text) => {
     for (let i = 0; i < text.length; i++) {
         const ch = text[i];
 
-        // Xử lý khoảng trắng: Hút chữ bằng cách bỏ qua space nếu cờ skipNextSpaces đang bật
         if (/\s/.test(ch)) {
             if (skipNextSpaces) continue;
             normalizedText += ch;
@@ -37,7 +34,6 @@ const splitIntoSentences = (text) => {
         let isClosing = false;
         let isQuote = false;
 
-        // Phân loại ngoặc rõ ràng
         if (['“', '「', '『'].includes(ch)) {
             isOpening = true;
             isQuote = true;
@@ -49,20 +45,25 @@ const splitIntoSentences = (text) => {
             let prev = i > 0 ? text[i - 1] : ' ';
             let next = i < text.length - 1 ? text[i + 1] : ' ';
 
-            // isPrevAttached: Ký tự liền trước là chữ, số, hoặc dấu câu thường nằm sát bên trong ngoặc đóng
             let isPrevAttached = /[\p{L}\p{N}.,;!?…\]\)]/u.test(prev);
-
-            // isNextWord: Ký tự liền sau là chữ hoặc số
             let isNextWord = /[\p{L}\p{N}]/u.test(next);
 
-            if (!isPrevAttached && isNextWord) {
-                // Chắc chắn là mở (VD: [space]"Thiên, hoặc :"Thiên)
+            let isMisplacedClosing = false;
+            if (inQuote && /\s/.test(prev)) {
+                let idx = i - 1;
+                while (idx > 0 && /\s/.test(text[idx])) idx--;
+                if (/[.!?……]/u.test(text[idx])) {
+                    isMisplacedClosing = true;
+                }
+            }
+
+            if (isMisplacedClosing) {
+                isClosing = true;
+            } else if (!isPrevAttached && isNextWord) {
                 isOpening = true;
             } else if (isPrevAttached && !isNextWord) {
-                // Chắc chắn là đóng (VD: tài", Đinh!")
                 isClosing = true;
             } else {
-                // Trường hợp nhập nhằng (VD: đoạn"Nhìn, hạ?"Nghe) -> Dựa vào cờ inQuote để tự đảo chiều
                 if (inQuote) isClosing = true;
                 else isOpening = true;
             }
@@ -71,26 +72,22 @@ const splitIntoSentences = (text) => {
         if (isQuote) {
             if (isOpening) {
                 inQuote = true;
-                // Nếu sát trước ngoặc mở là Chữ/Số/Dấu câu -> Đẩy khoảng trắng ra ngoài
                 if (normalizedText.length > 0) {
                     const lastChar = normalizedText[normalizedText.length - 1];
-                    if (/[\p{L}\p{N},:;.!?…]/u.test(lastChar)) {
+                    if (/[\p{L}\p{N},:;.!?…]/u.test(lastChar) || justAppendedClosingQuote) {
                         normalizedText += ' ';
                     }
                 }
                 normalizedText += ch;
-                skipNextSpaces = true; // Kích hoạt hút chữ sát vào ngoặc
+                skipNextSpaces = true;
                 justAppendedClosingQuote = false;
             } else {
-                // isClosing
                 inQuote = false;
-                // Xóa khoảng trắng sát trước ngoặc đóng
                 normalizedText = normalizedText.trimEnd();
                 normalizedText += ch;
-                justAppendedClosingQuote = true; // Đánh dấu để đẩy chữ tiếp theo ra ngoài
+                justAppendedClosingQuote = true;
             }
         } else {
-            // Nếu vừa đóng ngoặc mà gặp ngay Chữ/Số -> Đẩy khoảng trắng ra ngoài
             if (justAppendedClosingQuote && /[\p{L}\p{N}]/u.test(ch)) {
                 if (!normalizedText.endsWith(' ')) {
                     normalizedText += ' ';
@@ -101,37 +98,27 @@ const splitIntoSentences = (text) => {
         }
     }
     text = normalizedText;
-    // -----------------------------------------------------------------------
-    // ----------------------------------------------
 
     const openQuotes = ['"', '“', '「', '『'];
     const closeQuotes = ['"', '”', '」', '』'];
     const allQuotes = [...openQuotes, ...closeQuotes];
 
-    // Danh sách từ viết tắt phổ biến
     const abbreviations = [
         'Mr', 'Mrs', 'Ms', 'Miss', 'Dr', 'Prof', 'St', 'Jr', 'Sr',
         'Rev', 'Lt', 'Capt', 'Col', 'Gen', 'Sgt', 'Cpl', 'Pvt', 'Gov',
         'GS', 'PGS', 'TS', 'ThS', 'BS', 'KS', 'LS', 'Tp', 'TP'
     ];
 
-    // const isUpperishStart = (str) => /^["'“「『\-\s]*[\p{Lu}]/u.test(str);
-    // const isUpperishStartAfterSpace = (str) =>
-    //     /^["'"\u300c\u300e\-]*\s+["'"\u300c\u300e\-\s]*[\p{Lu}]/u.test(str);
-
     const isUpperishStart = (str) =>
         /^["'“「『\-\s\u3164\u200B]*([\p{Lu}\p{N}]|[({\[<][\p{L}\p{N}]+[)}\]>])/u.test(str);
-
     const isUpperishStartAfterSpace = (str) =>
         /^["'“「『\-]*[\s\u3164\u200B]+["'“「『\-\s\u3164\u200B]*([\p{Lu}\p{N}]|[({\[<][\p{L}\p{N}]+[)}\]>])/u.test(str);
-
     const isAbbreviation = (buffer) => {
         const trimmed = buffer.trim().replace(/[.!?…]+$/, '');
         const words = trimmed.split(/[\s\.]+/);
         const lastWord = words[words.length - 1];
         return abbreviations.includes(lastWord);
     };
-
     const countChar = (str, char) => {
         let count = 0;
         for (let i = 0; i < str.length; i++) if (str[i] === char) count++;
@@ -140,7 +127,6 @@ const splitIntoSentences = (text) => {
 
     const specialPairs = { '“': '”', '「': '」', '『': '』' };
     const unbalanced = {};
-
     for (const [open, close] of Object.entries(specialPairs)) {
         if (countChar(text, open) !== countChar(text, close)) {
             unbalanced[open] = true;
@@ -148,16 +134,19 @@ const splitIntoSentences = (text) => {
         }
     }
 
+    const isParenthesisBalanced = countChar(text, '(') === countChar(text, ')');
+    const isSquareBracketBalanced = countChar(text, '[') === countChar(text, ']');
+
     const splitSegment = (seg) => {
         const results = [];
         let current = '';
         let quoteLevel = 0;
+        let parenthesisLevel = 0;
+        let squareBracketLevel = 0;
         let hasOuterWords = false;
         let startedWithQuote = false;
         let i = 0;
 
-        // Dynamically match valid straight quote pairs
-        // Ignore empty ("") or space-only ("  ") quotes to prevent parity breakage
         const openQuoteIndices = new Set();
         const closeQuoteIndices = new Set();
         const quoteRegex = /"[^"]*[^\s"][^"]*"/g;
@@ -169,6 +158,11 @@ const splitIntoSentences = (text) => {
 
         while (i < seg.length) {
             const ch = seg[i];
+
+            if (ch === '(' && isParenthesisBalanced) parenthesisLevel++;
+            else if (ch === ')' && isParenthesisBalanced) parenthesisLevel = Math.max(0, parenthesisLevel - 1);
+            else if (ch === '[' && isSquareBracketBalanced) squareBracketLevel++;
+            else if (ch === ']') squareBracketLevel = Math.max(0, squareBracketLevel - 1);
 
             if (allQuotes.includes(ch)) {
                 if (current.trim().replace(/^[\-\s]+/, '') === '') startedWithQuote = true;
@@ -188,7 +182,6 @@ const splitIntoSentences = (text) => {
 
                 current += ch;
                 i++;
-
                 if (quoteLevel === 0 && !unbalanced[ch]) {
                     const rest = seg.slice(i);
                     const nextNonSpaceMatch = rest.match(/^\s*(.)/);
@@ -211,23 +204,23 @@ const splitIntoSentences = (text) => {
                             const isJustEllipsis = /^(\.{2,}|…+)$/.test(punct);
                             const textInsideQuote = current.replace(/^["'“「『\-\s]+/, '').replace(/["'”」』\s]+$/, '');
                             const hasInternalSentence = /[.!?…]+[\s]+/.test(textInsideQuote);
-
                             if ((!hasInternalSentence || allQuotes.includes(nextChar)) && !isAbbreviation(current)) {
-                                // Check if the next segment is attached (no space between)
                                 let isAttachedCloseQuote = closeQuotes.includes(rest[0]);
                                 if (rest[0] === '"' && openQuoteIndices.has(i)) {
                                     isAttachedCloseQuote = false;
                                 }
-                                const isAttachedWord = /^[\p{L}\p{N}]/u.test(rest) || isAttachedCloseQuote;
+
+                                // --- FIX 2: Đổi \p{L} thành \p{Ll} để cho phép bẻ câu nếu chữ dính liền là Chữ Hoa ---
+                                const isAttachedWord = /^[\p{Ll}\p{N}]/u.test(rest) || isAttachedCloseQuote;
 
                                 if (!isAttachedWord && ((isUpperishStart(rest) && !isJustEllipsis) || allQuotes.includes(nextChar))) {
                                     let shouldSplit = true;
+
                                     if (/^["'“「『](?:\s+|…+|\.+)[^.!?…]{1,15}[.!?…]+["”」』]*$/.test(current.trim())) {
                                         shouldSplit = false;
                                     }
 
                                     if (shouldSplit && !allQuotes.includes(nextChar)) {
-                                        // ÁP DỤNG LOGIC CỦA BẠN: Sau ngoặc kép là chữ/số -> KHÔNG cắt (đoạn trần thuật)
                                         if (/[\p{L}\p{N}]/u.test(nextChar)) {
                                             shouldSplit = false;
                                         } else {
@@ -238,7 +231,7 @@ const splitIntoSentences = (text) => {
                                         }
                                     }
 
-                                    if (shouldSplit) {
+                                    if (shouldSplit && parenthesisLevel === 0 && squareBracketLevel === 0) {
                                         results.push(current.trim());
                                         current = '';
                                         hasOuterWords = false;
@@ -252,7 +245,17 @@ const splitIntoSentences = (text) => {
                 continue;
             }
 
-            if (quoteLevel === 0 && /[.!?…]/.test(ch)) {
+            if (quoteLevel === 0 && parenthesisLevel === 0 && squareBracketLevel === 0 && /[.!?…]/.test(ch)) {
+                if (ch === '.' && i > 0 && i < seg.length - 1) {
+                    const prevChar = seg[i - 1];
+                    const nextChar = seg[i + 1];
+                    if (/\p{N}/u.test(prevChar) && /\p{N}/u.test(nextChar)) {
+                        current += ch;
+                        i++;
+                        continue;
+                    }
+                }
+
                 let punct = '';
                 while (i < seg.length && /[.!?…]/.test(seg[i])) {
                     punct += seg[i];
@@ -260,16 +263,19 @@ const splitIntoSentences = (text) => {
                 }
 
                 const tempCurrent = current + punct;
-
                 if (!isAbbreviation(tempCurrent)) {
                     let trailingQuotes = '';
                     while (i < seg.length) {
                         const nextCh = seg[i];
-                        // Prevent the loop from greedily consuming a straight OPENING quote
                         if (nextCh === '"' && openQuoteIndices.has(i)) {
                             break;
                         }
-
+                        if (nextCh === '"' && !closeQuoteIndices.has(i)) {
+                            const afterQuote = seg.slice(i + 1);
+                            if (/^[\p{L}\p{N}]/u.test(afterQuote)) {
+                                break;
+                            }
+                        }
                         if (/["'”」』]/.test(nextCh)) {
                             trailingQuotes += nextCh;
                             i++;
@@ -284,7 +290,6 @@ const splitIntoSentences = (text) => {
                     let canSplit = true;
                     if (trailingQuotes.length > 0) {
                         canSplit = (!hasOuterWords || startedWithQuote);
-
                         const nextNonSpaceMatch = rest.match(/^\s*(.)/);
                         if (!canSplit && nextNonSpaceMatch) {
                             const nextChar = nextNonSpaceMatch[1];
@@ -303,7 +308,6 @@ const splitIntoSentences = (text) => {
                             isAttachedCloseQuote = false;
                         }
 
-                        // Prevent splitting if there's an attached letter, number, or quote with no leading space
                         if (/^[\p{L}\p{N}]/u.test(rest) || isAttachedCloseQuote) {
                             canSplit = false;
                         }
@@ -318,7 +322,7 @@ const splitIntoSentences = (text) => {
                         }
                     }
 
-                    if (/^["'“「『](?:\s+|…+|\.+)[^.!?…]{1,15}[.!?…]+["”」』]*$/.test(fullCurrent.trim())) {
+                    if (/^["'“「『](?:\s+|…+|\.+)?[^.!?…]{1,15}[.!?…]+["”」』]*$/.test(fullCurrent.trim())) {
                         canSplit = false;
                     }
 
@@ -326,16 +330,13 @@ const splitIntoSentences = (text) => {
                         canSplit = false;
                     }
 
-                    // --- FIX: Smarter Ellipsis boundary check ---
                     const isUnicodeEllipsisOnly = /^\u2026+$/.test(punct);
                     let upperCheck = false;
 
                     if (isUnicodeEllipsisOnly) {
                         if (isUpperishStartAfterSpace(rest)) {
-                            upperCheck = true; // Clear sentence boundary with space
+                            upperCheck = true;
                         } else if (isUpperishStart(rest)) {
-                            // If attached without a space, distinguish between a typo missing space
-                            // ("bố…Trung") and an intended pause ("đoạn …Viêm").
                             if (!current.endsWith(' ')) {
                                 upperCheck = true;
                             }
@@ -343,7 +344,11 @@ const splitIntoSentences = (text) => {
                     } else {
                         upperCheck = isUpperishStart(rest);
                     }
-                    // ---------------------------------------------
+
+                    // --- FIX 2: Đổi \p{L} thành \p{Ll} để cho phép bẻ câu nếu chữ dính liền là Chữ Hoa ---
+                    if (/^[\p{Ll}\p{N}]/u.test(rest) && !isAttachedCloseQuote) {
+                        canSplit = false;
+                    }
 
                     if (canSplit && (rest.trim().length === 0 || upperCheck)) {
                         results.push(fullCurrent.trim());
@@ -359,7 +364,7 @@ const splitIntoSentences = (text) => {
                 continue;
             }
 
-            if (quoteLevel === 0 && /[\p{L}\p{N}]/u.test(ch)) hasOuterWords = true;
+            if (quoteLevel === 0 && parenthesisLevel === 0 && squareBracketLevel === 0 && /[\p{L}\p{N}]/u.test(ch)) hasOuterWords = true;
             current += ch;
             i++;
         }
@@ -368,12 +373,70 @@ const splitIntoSentences = (text) => {
         return results;
     };
 
-    // return splitSegment(text)
-    //     .map(s => s.trim())
-    //     .filter(s => s.replace(/["“”「」『』'.,!?…\-\s]/g, '').length > 0);
-    return splitSegment(text)
+    // --- ĐOẠN CODE HIỆN TẠI CỦA BẠN (Lấy mảng raw ban đầu) ---
+    const rawSentences = splitSegment(text)
         .map(s => s.replace(/^[\s\u3164\u200B]+|[\s\u3164\u200B]+$/g, ''))
         .filter(s => s.replace(/["“”「」『』'.,!?…\-\s\u3164\u200B]/g, '').length > 0);
+
+    // ========================================================
+    // --- THÊM TẦNG LOOK-BACK PHÁT HIỆN VÀ SỬA LỖI ANOMALY ---
+    // ========================================================
+
+    // Hàm phụ trợ bẻ nhỏ các câu bị nuốt do lỗi ngoặc kép
+    const splitAnomaly = (anomalyText) => {
+        let subResults = [];
+        let current = '';
+        let i = 0;
+
+        while (i < anomalyText.length) {
+            const ch = anomalyText[i];
+            current += ch;
+
+            if (/[.!?…]/.test(ch)) {
+                // 1. Nuốt hết nhóm dấu câu liên tiếp nếu có (vd: ... hoặc !!!)
+                while (i + 1 < anomalyText.length && /[.!?…]/.test(anomalyText[i + 1])) {
+                    i++;
+                    current += anomalyText[i];
+                }
+
+                // 2. QUAN TRỌNG: Nuốt tiếp các dấu ngoặc đóng đi liền liền sau dấu câu (vd: .” hoặc .")
+                // Điều này giúp giữ nguyên vẹn các câu thoại chuẩn như “Tặng ngươi.” mà không làm rách ngoặc
+                while (i + 1 < anomalyText.length && /["'”」』]/.test(anomalyText[i + 1])) {
+                    i++;
+                    current += anomalyText[i];
+                }
+
+                const rest = anomalyText.slice(i + 1);
+                if (rest.trim().length > 0) {
+                    // Kiểm tra xem phần văn bản kế tiếp có bắt đầu bằng chữ viết hoa không
+                    if (isUpperishStart(rest)) {
+                        subResults.push(current.trim());
+                        current = '';
+                    }
+                }
+            }
+            i++;
+        }
+        if (current.trim()) subResults.push(current.trim());
+        return subResults;
+    };
+
+    // Duyệt qua mảng kết quả thô để tìm kiếm Anomaly
+    const finalSentences = [];
+    for (const s of rawSentences) {
+        // Điều kiện tìm Anomaly: Dài > 250 ký tự VÀ có dấu kết thúc câu kèm chữ viết hoa ở giữa chuỗi
+        const hasInternalBoundary = /[.!?…]\s*["'“「『\-]*[\p{Lu}\p{N}]/u.test(s);
+
+        if (s.length > 250 && hasInternalBoundary) {
+            // Kích hoạt bộ cứu hộ giải cứu khối text bị nuốt chửng
+            const fixedSubSentences = splitAnomaly(s);
+            finalSentences.push(...fixedSubSentences);
+        } else {
+            finalSentences.push(s);
+        }
+    }
+
+    return finalSentences;
 };
 
 const tests = [
@@ -653,24 +716,25 @@ const tests = [
     },
     {
         label: 'Test 58',
-        input: '"  "Chắc là tới ngày mai, tin tức này sẽ lan truyền khắp nơi, đến lúc đó cứ đợi chuyện cười là được rồi, ha ha…"Lúc này, hai tên hộ vệ không kiêng nể gì mà bàn luận, chẳng hề để ý tới thiếu niên đang chảy máu đầm đìa trêи mặt đất kia là sống hay đã chết. Rắc rắc… Tiếng sấm cuồn cuộn, chớp nổ kinh hoàng, gió giật bão cuốn đám lá rụng tung bay khắp đất trời. Giờ phút này, thiếu niên đã nằm rạp trêи mặt đất, khuôn mặt trắng trẻo, sạch sẽ đã ướt đẫm máu tươi, thân thể run rẩy không ngừng, chỗ nào cũng đang chảy máu."Lăng Thế Thành! ""Lăng Thiên!',
+        input: '"  "Chắc là tới ngày mai, tin tức này sẽ lan truyền khắp nơi, đến lúc đó cứ đợi chuyện cười là được rồi, ha ha…"Lúc này, hai tên hộ vệ không kiêng nể gì mà bàn luận, chẳng hề để ý tới thiếu niên đang chảy máu đầm đìa trêи mặt đất kia là sống hay đã chết. Rắc rắc… Tiếng sấm cuồn cuộn, chớp nổ kinh hoàng, gió giật bão cuốn đám lá rụng tung bay khắp đất trời. Giờ phút này, thiếu niên đã nằm rạp trêи mặt đất, khuôn mặt trắng trẻo, sạch sẽ đã ướt đẫm máu tươi, thân thể run rẩy không ngừng, chỗ nào cũng đang chảy máu."Lăng Thế Thành! "Lăng Thiên!',
         expected: [
             '""Chắc là tới ngày mai, tin tức này sẽ lan truyền khắp nơi, đến lúc đó cứ đợi chuyện cười là được rồi, ha ha…" Lúc này, hai tên hộ vệ không kiêng nể gì mà bàn luận, chẳng hề để ý tới thiếu niên đang chảy máu đầm đìa trêи mặt đất kia là sống hay đã chết.',
             'Rắc rắc…',
             'Tiếng sấm cuồn cuộn, chớp nổ kinh hoàng, gió giật bão cuốn đám lá rụng tung bay khắp đất trời.',
             'Giờ phút này, thiếu niên đã nằm rạp trêи mặt đất, khuôn mặt trắng trẻo, sạch sẽ đã ướt đẫm máu tươi, thân thể run rẩy không ngừng, chỗ nào cũng đang chảy máu.',
-            '"Lăng Thế Thành!" "Lăng Thiên!'
+            '"Lăng Thế Thành!" Lăng Thiên!'
         ]
     },
     {
         label: 'Test 59',
         input: '""Chắc là tới ngày mai, tin tức này sẽ lan truyền khắp nơi, đến lúc đó cứ đợi chuyện cười là được rồi, ha ha…"Lúc này, hai tên hộ vệ không kiêng nể gì mà bàn luận, chẳng hề để ý tới thiếu niên đang chảy máu đầm đìa trêи mặt đất kia là sống hay đã chết. Rắc rắc… Tiếng sấm cuồn cuộn, chớp nổ kinh hoàng, gió giật bão cuốn đám lá rụng tung bay khắp đất trời. Giờ phút này, thiếu niên đã nằm rạp trêи mặt đất, khuôn mặt trắng trẻo, sạch sẽ đã ướt đẫm máu tươi, thân thể run rẩy không ngừng, chỗ nào cũng đang chảy máu."Lăng Thế Thành! ""Lăng Thiên!',
         expected: [
-            '""Chắc là tới ngày mai, tin tức này sẽ lan truyền khắp nơi, đến lúc đó cứ đợi chuyện cười là được rồi, ha ha…"Lúc này, hai tên hộ vệ không kiêng nể gì mà bàn luận, chẳng hề để ý tới thiếu niên đang chảy máu đầm đìa trêи mặt đất kia là sống hay đã chết.',
+            '""Chắc là tới ngày mai, tin tức này sẽ lan truyền khắp nơi, đến lúc đó cứ đợi chuyện cười là được rồi, ha ha…" Lúc này, hai tên hộ vệ không kiêng nể gì mà bàn luận, chẳng hề để ý tới thiếu niên đang chảy máu đầm đìa trêи mặt đất kia là sống hay đã chết.',
             'Rắc rắc…',
             'Tiếng sấm cuồn cuộn, chớp nổ kinh hoàng, gió giật bão cuốn đám lá rụng tung bay khắp đất trời.',
             'Giờ phút này, thiếu niên đã nằm rạp trêи mặt đất, khuôn mặt trắng trẻo, sạch sẽ đã ướt đẫm máu tươi, thân thể run rẩy không ngừng, chỗ nào cũng đang chảy máu.',
-            '"Lăng Thế Thành!" "Lăng Thiên!'
+            '"Lăng Thế Thành!"',
+            '"Lăng Thiên!'
         ]
     },
     {
@@ -709,7 +773,7 @@ const tests = [
             '“Nếu như Xuân Thu Thiền vừa mới luyện thành có hiệu quả, vậy thì kiếp sau vẫn muốn làm ma!” Nghĩ như vậy, Phương Nguyên không kiềm được cất tiếng cười to.',
             '“Lão ma, ngươi cười cái gì?”',
             '“Mọi người cẩn thận, ma đầu này chết đến nơi còn muốn phản công!”',
-            '“Mau giao Xuân Thu Thiền ra đây!!”Quần hùng dồn ép, cùng nhau vọt đến.',
+            '“Mau giao Xuân Thu Thiền ra đây!!” Quần hùng dồn ép, cùng nhau vọt đến.',
             'Đúng lúc này, tiếng ầm ầm chấn động đất trời vang lên, Phương Nguyên ngang nhiên tự bạo chính mình.....',
             'Mưa xuân rả rích, lặng yên tưới mát núi Thanh Mao.',
             'Đêm đã khuya, gió mát nhè nhẹ thổi mưa phùn lất phất.',
@@ -717,7 +781,7 @@ const tests = [
             'Nơi phát ra ánh sáng là những căn nhà sàn, mặc dù không thể gọi là vạn nhà lên đèn, nhưng cũng có quy mô đến hàng ngàn.',
             'Đây chính là sơn trại Cổ Nguyệt trên núi Thanh Mao, nơi khiến cho dãy núi vắng vẻ này tăng thêm một phần hơi thở con người.',
             'Ở khu trung tâm của sơn trại Cổ Nguyệt là một toà lầu các to lớn đẹp đẽ, vì lúc này nơi đó đang tổ chức lễ cúng tế mà đèn đuốc sáng choang, ánh sáng rực rỡ.',
-            '“Liệt tổ liệt tông phù hộ, hy vọng trong đại điển Khai Khiếu lần này có thể có nhiều thiếu niên tư chất ưu tú hơn, tăng thêm dòng máu mới và hy vọng cho gia tộc!”Tộc trưởng Cổ Nguyệt có dáng vẻ trung niên, hai bên tóc mai điểm sương, mặc một bộ trang phục cúng tế trang trọng thuần một màu trắng.',
+            '“Liệt tổ liệt tông phù hộ, hy vọng trong đại điển Khai Khiếu lần này có thể có nhiều thiếu niên tư chất ưu tú hơn, tăng thêm dòng máu mới và hy vọng cho gia tộc!” Tộc trưởng Cổ Nguyệt có dáng vẻ trung niên, hai bên tóc mai điểm sương, mặc một bộ trang phục cúng tế trang trọng thuần một màu trắng.',
             'Ông ta quỳ gối trên sàn nhà màu nâu, thẳng lưng, hai tay chắp thành hình chữ thập ở trước người, nhắm mắt thành tâm khấn vái.'
         ]
     },
@@ -757,7 +821,7 @@ const tests = [
             '“Nếu như Xuân Thu Thiền vừa mới luyện thành có hiệu quả, vậy thì kiếp sau vẫn muốn làm ma!” Nghĩ như vậy, Phương Nguyên không kiềm được cất tiếng cười to.',
             '“Lão ma, ngươi cười cái gì?”',
             '“Mọi người cẩn thận, ma đầu này chết đến nơi còn muốn phản công!”',
-            '“Mau giao Xuân Thu Thiền ra đây!!”Quần hùng dồn ép, cùng nhau vọt đến.',
+            '“Mau giao Xuân Thu Thiền ra đây!!” Quần hùng dồn ép, cùng nhau vọt đến.',
             'Đúng lúc này, tiếng ầm ầm chấn động đất trời vang lên, Phương Nguyên ngang nhiên tự bạo chính mình.....',
             'Mưa xuân rả rích, lặng yên tưới mát núi Thanh Mao.',
             'Đêm đã khuya, gió mát nhè nhẹ thổi mưa phùn lất phất.',
@@ -765,7 +829,7 @@ const tests = [
             'Nơi phát ra ánh sáng là những căn nhà sàn, mặc dù không thể gọi là vạn nhà lên đèn, nhưng cũng có quy mô đến hàng ngàn.',
             'Đây chính là sơn trại Cổ Nguyệt trên núi Thanh Mao, nơi khiến cho dãy núi vắng vẻ này tăng thêm một phần hơi thở con người.',
             'Ở khu trung tâm của sơn trại Cổ Nguyệt là một toà lầu các to lớn đẹp đẽ, vì lúc này nơi đó đang tổ chức lễ cúng tế mà đèn đuốc sáng choang, ánh sáng rực rỡ.',
-            '“Liệt tổ liệt tông phù hộ, hy vọng trong đại điển Khai Khiếu lần này có thể có nhiều thiếu niên tư chất ưu tú hơn, tăng thêm dòng máu mới và hy vọng cho gia tộc!”Tộc trưởng Cổ Nguyệt có dáng vẻ trung niên, hai bên tóc mai điểm sương, mặc một bộ trang phục cúng tế trang trọng thuần một màu trắng.',
+            '“Liệt tổ liệt tông phù hộ, hy vọng trong đại điển Khai Khiếu lần này có thể có nhiều thiếu niên tư chất ưu tú hơn, tăng thêm dòng máu mới và hy vọng cho gia tộc!” Tộc trưởng Cổ Nguyệt có dáng vẻ trung niên, hai bên tóc mai điểm sương, mặc một bộ trang phục cúng tế trang trọng thuần một màu trắng.',
             'Ông ta quỳ gối trên sàn nhà màu nâu, thẳng lưng, hai tay chắp thành hình chữ thập ở trước người, nhắm mắt thành tâm khấn vái.'
         ]
     },
@@ -773,23 +837,23 @@ const tests = [
         label: 'Test 62',
         input: '“Phương Nguyên, ngoan ngoãn giao Xuân Thu Thiền ra đây, ta sẽ cho ngươi chết dễ dàng! ” “Phương lão ma, ngươi đừng hòng phản kháng, hôm nay các đại phái chính đạo chúng ta liên hợp lại chính là muốn đạp nát sào huyệt của ngươi. Ở đây đã bày sẵn thiên la địa võng, lần này ngươi nhất định phải đầu lìa khỏi cổ! ” “Phương Nguyên, ngươi là tên ma đầu chết tiệt, ngươi vì luyện thành Xuân Thu Thiền đã giết ngàn vạn tính mệnh. Ngươi đã phạm phải tội nghiệt tày trời, không thể tha thứ! ”',
         expected: [
-            '“Phương Nguyên, ngoan ngoãn giao Xuân Thu Thiền ra đây, ta sẽ cho ngươi chết dễ dàng! ”',
-            '“Phương lão ma, ngươi đừng hòng phản kháng, hôm nay các đại phái chính đạo chúng ta liên hợp lại chính là muốn đạp nát sào huyệt của ngươi. Ở đây đã bày sẵn thiên la địa võng, lần này ngươi nhất định phải đầu lìa khỏi cổ! ”',
-            '“Phương Nguyên, ngươi là tên ma đầu chết tiệt, ngươi vì luyện thành Xuân Thu Thiền đã giết ngàn vạn tính mệnh. Ngươi đã phạm phải tội nghiệt tày trời, không thể tha thứ! ”'
+            '“Phương Nguyên, ngoan ngoãn giao Xuân Thu Thiền ra đây, ta sẽ cho ngươi chết dễ dàng!”',
+            '“Phương lão ma, ngươi đừng hòng phản kháng, hôm nay các đại phái chính đạo chúng ta liên hợp lại chính là muốn đạp nát sào huyệt của ngươi. Ở đây đã bày sẵn thiên la địa võng, lần này ngươi nhất định phải đầu lìa khỏi cổ!”',
+            '“Phương Nguyên, ngươi là tên ma đầu chết tiệt, ngươi vì luyện thành Xuân Thu Thiền đã giết ngàn vạn tính mệnh. Ngươi đã phạm phải tội nghiệt tày trời, không thể tha thứ!”'
         ]
     },
     {
         label: 'Test 63',
         input: `"Đấu lực, ba đoạn"Nhìn năm chữ to lớn có chút chói mắt trên trắc nghiệm ma thạch, thiếu niên mặt không chút thay đổi, thần sắc tự giễu, nắm chặt tay, bởi vì dùng lực quá mạnh làm móng tay đâm thật sâu vào trong lòng bàn tay, mang đến từng trận trận đau đớn trong tâm hồn..."Tiêu Viêm, đấu lực, ba đoạn! Cấp bậc: Cấp thấp!".Bên cạnh trắc nghiệm ma thạch, một vị trung niên nam tử, thoáng nhìn tin tức trên bia, ngữ khí hờ hững công bố…Trung niên nam tử vừa nói xong, không có gì ngoài ý muốn, đám người trên quảng trường lại nổi lên trận trận châm chọc tao động"Ba đoạn? Hắc hắc, quả nhiên không ngoài dự đoán của ta, ""Thiên tài" này một năm rồi vẫn dậm chân tại chỗ a!""Ai, phế vật này thật sự làm mất hết cả mặt mũi gia tộc.""Nếu tộc trưởng không phải phụ thân của hắn. Loại phế vật này sớm đã bị đuổi khỏi gia tộc, tự sinh tự diệt rồi, làm gì còn có cơ hội ở gia tộc ăn không uống không.""Ai..., thiên tài thiếu niên năm đó của Văn Ô Thản thành, tại sao hôm nay lại lạc phách thành bộ dáng này cơ chứ?""Ai mà biết được? Có lẽ do làm việc gì đó trái với lương tâm, làm thần linh nổi giận đó mà…"Chung quanh truyền đến cười nhạo cùng thanh âm tiếc hận, dừng ở trong tai của thiếu niên, tựa như một chiếc dao nhọn hung hăng đâm vào tim hắn, khiến hô hấp của thiếu niên trở nên có chút dồn dập.`,
         expected: [
-            '"Đấu lực, ba đoạn"Nhìn năm chữ to lớn có chút chói mắt trên trắc nghiệm ma thạch, thiếu niên mặt không chút thay đổi, thần sắc tự giễu, nắm chặt tay, bởi vì dùng lực quá mạnh làm móng tay đâm thật sâu vào trong lòng bàn tay, mang đến từng trận trận đau đớn trong tâm hồn...',
+            '"Đấu lực, ba đoạn" Nhìn năm chữ to lớn có chút chói mắt trên trắc nghiệm ma thạch, thiếu niên mặt không chút thay đổi, thần sắc tự giễu, nắm chặt tay, bởi vì dùng lực quá mạnh làm móng tay đâm thật sâu vào trong lòng bàn tay, mang đến từng trận trận đau đớn trong tâm hồn...',
             '"Tiêu Viêm, đấu lực, ba đoạn! Cấp bậc: Cấp thấp!".',
             'Bên cạnh trắc nghiệm ma thạch, một vị trung niên nam tử, thoáng nhìn tin tức trên bia, ngữ khí hờ hững công bố…',
-            'Trung niên nam tử vừa nói xong, không có gì ngoài ý muốn, đám người trên quảng trường lại nổi lên trận trận châm chọc tao động"Ba đoạn? Hắc hắc, quả nhiên không ngoài dự đoán của ta, ""Thiên tài" này một năm rồi vẫn dậm chân tại chỗ a!"',
+            'Trung niên nam tử vừa nói xong, không có gì ngoài ý muốn, đám người trên quảng trường lại nổi lên trận trận châm chọc tao động "Ba đoạn? Hắc hắc, quả nhiên không ngoài dự đoán của ta," "Thiên tài" này một năm rồi vẫn dậm chân tại chỗ a!"',
             '"Ai, phế vật này thật sự làm mất hết cả mặt mũi gia tộc."',
             '"Nếu tộc trưởng không phải phụ thân của hắn. Loại phế vật này sớm đã bị đuổi khỏi gia tộc, tự sinh tự diệt rồi, làm gì còn có cơ hội ở gia tộc ăn không uống không."',
             '"Ai..., thiên tài thiếu niên năm đó của Văn Ô Thản thành, tại sao hôm nay lại lạc phách thành bộ dáng này cơ chứ?"',
-            '"Ai mà biết được? Có lẽ do làm việc gì đó trái với lương tâm, làm thần linh nổi giận đó mà…"Chung quanh truyền đến cười nhạo cùng thanh âm tiếc hận, dừng ở trong tai của thiếu niên, tựa như một chiếc dao nhọn hung hăng đâm vào tim hắn, khiến hô hấp của thiếu niên trở nên có chút dồn dập.'
+            '"Ai mà biết được? Có lẽ do làm việc gì đó trái với lương tâm, làm thần linh nổi giận đó mà…" Chung quanh truyền đến cười nhạo cùng thanh âm tiếc hận, dừng ở trong tai của thiếu niên, tựa như một chiếc dao nhọn hung hăng đâm vào tim hắn, khiến hô hấp của thiếu niên trở nên có chút dồn dập.'
         ]
     },
     {
@@ -799,7 +863,7 @@ const tests = [
             '"Đấu lực, ba đoạn" Nhìn năm chữ to lớn có chút chói mắt trên trắc nghiệm ma thạch, thiếu niên mặt không chút thay đổi, thần sắc tự giễu, nắm chặt tay, bởi vì dùng lực quá mạnh làm móng tay đâm thật sâu vào trong lòng bàn tay, mang đến từng trận trận đau đớn trong tâm hồn...',
             '"Tiêu Viêm, đấu lực, ba đoạn! Cấp bậc: Cấp thấp!".',
             'Bên cạnh trắc nghiệm ma thạch, một vị trung niên nam tử, thoáng nhìn tin tức trên bia, ngữ khí hờ hững công bố…',
-            'Trung niên nam tử vừa nói xong, không có gì ngoài ý muốn, đám người trên quảng trường lại nổi lên trận trận châm chọc tao động "Ba đoạn? Hắc hắc, quả nhiên không ngoài dự đoán của ta, ""Thiên tài" này một năm rồi vẫn dậm chân tại chỗ a!"',
+            'Trung niên nam tử vừa nói xong, không có gì ngoài ý muốn, đám người trên quảng trường lại nổi lên trận trận châm chọc tao động "Ba đoạn? Hắc hắc, quả nhiên không ngoài dự đoán của ta," "Thiên tài" này một năm rồi vẫn dậm chân tại chỗ a!"',
             '"Ai, phế vật này thật sự làm mất hết cả mặt mũi gia tộc."',
             '"Nếu tộc trưởng không phải phụ thân của hắn. Loại phế vật này sớm đã bị đuổi khỏi gia tộc, tự sinh tự diệt rồi, làm gì còn có cơ hội ở gia tộc ăn không uống không."',
             '"Ai..., thiên tài thiếu niên năm đó của Văn Ô Thản thành, tại sao hôm nay lại lạc phách thành bộ dáng này cơ chứ?"',
@@ -843,7 +907,71 @@ const tests = [
             'Điểm sáng trôi nổi, bao phủ toàn thân Phương Nguyên, cuối cùng tất cả đi vào trong cơ thể hắn.',
             '“Đây là Hy Vọng cổ.” Phương Nguyên lẩm nhẩm trong lòng.'
         ]
-    }
+    },
+    {
+        label: 'Test 68',
+        input: `(1)Một thạch gạo = 59.2kg gạo. 192.168.1.1.`,
+        expected: [
+            '(1)Một thạch gạo = 59.2kg gạo.',
+            '192.168.1.1.'
+        ]
+    },
+    {
+        label: 'Test 69',
+        input: `(1) [Chuẩn vàng: lấy vàng làm chuẩn để tính giá trị các vật khác. Tương tự, chuẩn nguyên thạch nghĩa là lấy nguyên thạch làm chuẩn.](2) [Một trời một vực: khác nhau quá xa, quá rõ rệt và ai nhìn vào cũng nhận thấy được.]`,
+        expected: [
+            `(1) [Chuẩn vàng: lấy vàng làm chuẩn để tính giá trị các vật khác. Tương tự, chuẩn nguyên thạch nghĩa là lấy nguyên thạch làm chuẩn.](2) [Một trời một vực: khác nhau quá xa, quá rõ rệt và ai nhìn vào cũng nhận thấy được.]`,
+        ]
+    },
+    {
+        label: 'Test 70',
+        input: `(1) (Chuẩn vàng: lấy vàng làm chuẩn để tính giá trị các vật khác. Tương tự, chuẩn nguyên thạch nghĩa là lấy nguyên thạch làm chuẩn.)(2) [Một trời một vực: khác nhau quá xa, quá rõ rệt và ai nhìn vào cũng nhận thấy được.]`,
+        expected: [
+            `(1) (Chuẩn vàng: lấy vàng làm chuẩn để tính giá trị các vật khác. Tương tự, chuẩn nguyên thạch nghĩa là lấy nguyên thạch làm chuẩn.)(2) [Một trời một vực: khác nhau quá xa, quá rõ rệt và ai nhìn vào cũng nhận thấy được.]`,
+        ]
+    },
+    {
+        label: 'Test 71',
+        input: `Lôi Đội xoay ngươi lại, đi về phía lều."Ngươi thích ăn gì?" "“Ta?” Lôi Đội đứng bên cạnh lều trại suy nghĩ một chút."Rắn đi, thứ kia có hương vị không tệ.” Nói xong, hắn đi vào lều trại.Hứa Thanh cầm túi ngủ, nhìn về phía lều trại Lôi Đội hồi lâu, nặng nề gật gật đầu, chui vào trong túi ngủ nhắm mắt lại.Nhưng hắn không lập tức ngủ, mà nhắm mắt yên lặng vận chuyển Hải Sơn Quyết, điều này đã trở thành thói quen của hắn.Mặc dù lúc tu hành băng hàn vô cùng, nhưng hắn vân không từ bỏ, nắm chặt hết thảy thời gian cố gắng tu luyện.Nhất là hôm nay Lôi Đội nói trước mười lăm tuổi Trúc Cơ, mặc dù hắn không thể so sánh với thiên kiêu trong lời kia, nhưng đáy lòng vẫn có một chút ý tưởng."Ta năm nay mười bốn..." Hứa Thanh lẩm bẩm, tiếp tục tu luyện.Cứ như vậy, thời gian dần dần trôi qua, rất nhanh năm ngày trôi qua.Hứa Thanh đi theo những Thập Hoang giả này, vượt qua núi non, đi qua thảo nguyên.Trên đường có ba người nửa đường rời đi, điều này cũng chứng minh lời phán đoán lúc trước của Hứa Thanh, nhóm người bọn họ, là tổ hợp tạm thời ở cùng một chỗ.Cho đến ngày thứ bảy, hai Thập Hoang giả cầm đao cũng rời đi, chỉ còn lại hai người Hứa Thanh cùng Lôi Đội.Đêm hôm đó, dưới một ngọn núi, bên cạnh lửa trại, lão giả Lôi Đội nhìn Hứa Thanh đang ăn bánh bao, còn cẩn thận thu lại một nửa, chậm rãi mở miệng."Tiểu hài tử, trưa mai, chúng ta có thể đến đích, đó là nơi ta sinh sống, là một doanh trại nơi Thập Hoang giả tụ tập.” Hứa Thanh ngẩng đầu, nhìn về phía lão giả.Lão giả nhìn xa xa, tiếp tục mở miệng."Doanh địa của Thập Hoang giả, thường thường đều được thành lập bên cạnh cấm khu, cho nên bên ngoài doanh trại ở bên kia núi, cũng là một cấm khu.`,
+        expected: [
+            'Lôi Đội xoay ngươi lại, đi về phía lều.',
+            '"Ngươi thích ăn gì?"',
+            '“Ta?” Lôi Đội đứng bên cạnh lều trại suy nghĩ một chút.',
+            '“Rắn đi, thứ kia có hương vị không tệ.” Nói xong, hắn đi vào lều trại.',
+            'Hứa Thanh cầm túi ngủ, nhìn về phía lều trại Lôi Đội hồi lâu, nặng nề gật gật đầu, chui vào trong túi ngủ nhắm mắt lại.',
+            'Nhưng hắn không lập tức ngủ, mà nhắm mắt yên lặng vận chuyển Hải Sơn Quyết, điều này đã trở thành thói quen của hắn.',
+            'Mặc dù lúc tu hành băng hàn vô cùng, nhưng hắn vân không từ bỏ, nắm chặt hết thảy thời gian cố gắng tu luyện.',
+            'Nhất là hôm nay Lôi Đội nói trước mười lăm tuổi Trúc Cơ, mặc dù hắn không thể so sánh với thiên kiêu trong lời kia, nhưng đáy lòng vẫn có một chút ý tưởng.',
+            '"Ta năm nay mười bốn..." Hứa Thanh lẩm bẩm, tiếp tục tu luyện.',
+            'Cứ như vậy, thời gian dần dần trôi qua, rất nhanh năm ngày trôi qua.',
+            'Hứa Thanh đi theo những Thập Hoang giả này, vượt qua núi non, đi qua thảo nguyên.',
+            'Trên đường có ba người nửa đường rời đi, điều này cũng chứng minh lời phán đoán lúc trước của Hứa Thanh, nhóm người bọn họ, là tổ hợp tạm thời ở cùng một chỗ.',
+            'Cho đến ngày thứ bảy, hai Thập Hoang giả cầm đao cũng rời đi, chỉ còn lại hai người Hứa Thanh cùng Lôi Đội.',
+            'Đêm hôm đó, dưới một ngọn núi, bên cạnh lửa trại, lão giả Lôi Đội nhìn Hứa Thanh đang ăn bánh bao, còn cẩn thận thu lại một nửa, chậm rãi mở miệng.',
+            '“Tiểu hài tử, trưa mai, chúng ta có thể đến đích, đó là nơi ta sinh sống, là một doanh trại nơi Thập Hoang giả tụ tập.” Hứa Thanh ngẩng đầu, nhìn về phía lão giả.',
+            'Lão giả nhìn xa xa, tiếp tục mở miệng.',
+            '"Doanh địa của Thập Hoang giả, thường thường đều được thành lập bên cạnh cấm khu, cho nên bên ngoài doanh trại ở bên kia núi, cũng là một cấm khu.'
+        ]
+    },
+    {
+        label: 'Test 72',
+        input: `"Bánh bao có ba cái, cầm trong tay rất nóng.Hứa Thanh do dự một chút, thấy mọi người bên cạnh đống lửa cũng đang ăn bánh bao giống nhau, vì thế đầu tiên là giả vờ ăn một miếng, quan sát những Thập Hoang giả kia, một lúc lâu sau phát hiện bọn họ vẫn như thường, hắn nhịn thật lâu, mới thật sự ăn một ngụm nhỏ, ngậm trong miệng chờ một lát.Xác định không có gì đáng ngại, lúc này mới chậm rãi nhai cho đến khi vỡ vụn, chậm rãi nuốt xuống.Lại đợi hồi lâu, sau khi lần thứ hai xác định không có gì đáng ngại, đáy lòng hắn thở phào nhẹ nhõm, rốt cuộc nhịn không được, cắn ăn từng ngụm. Tiếp theo hắn chần chờ một chút, lại từng ngụm từng ngụm nhỏ đem cái thứ hai cũng ăn xuống.Mặc dù bụng vẫn còn đói, nhưng hắn vẫn bọc lại cái bánh bao cuối cùng, cẩn thận đặt vào trong túi da của mình, giống như đặt kho báu.Rất nhanh sắc trời càng tối, Thập Hoang giả cũng lục tục trở lại trong lều trại, Lôi Đội giống như hôm qua, đem túi ngủ kia đưa cho hắn, trước khi đi nói một câu."Tặng ngươi.” Hứa Thanh ngẩng đầu, nhìn Lôi Đội, bỗng nhiên mở miệng."Tại sao?" "Tại sao cái gì mà tại sao? Ba cái bánh bao, một cái túi ngủ sao...!Không có tại sao, nếu ngươi có tâm, sau này cũng cho ta chút thức ăn là được.`,
+        expected: [
+            '"Bánh bao có ba cái, cầm trong tay rất nóng.',
+            'Hứa Thanh do dự một chút, thấy mọi người bên cạnh đống lửa cũng đang ăn bánh bao giống nhau, vì thế đầu tiên là giả vờ ăn một miếng, quan sát những Thập Hoang giả kia, một lúc lâu sau phát hiện bọn họ vẫn như thường, hắn nhịn thật lâu, mới thật sự ăn một ngụm nhỏ, ngậm trong miệng chờ một lát.',
+            'Xác định không có gì đáng ngại, lúc này mới chậm rãi nhai cho đến khi vỡ vụn, chậm rãi nuốt xuống.',
+            'Lại đợi hồi lâu, sau khi lần thứ hai xác định không có gì đáng ngại, đáy lòng hắn thở phào nhẹ nhõm, rốt cuộc nhịn không được, cắn ăn từng ngụm.',
+            'Tiếp theo hắn chần chờ một chút, lại từng ngụm từng ngụm nhỏ đem cái thứ hai cũng ăn xuống.',
+            'Mặc dù bụng vẫn còn đói, nhưng hắn vẫn bọc lại cái bánh bao cuối cùng, cẩn thận đặt vào trong túi da của mình, giống như đặt kho báu.',
+            'Rất nhanh sắc trời càng tối, Thập Hoang giả cũng lục tục trở lại trong lều trại, Lôi Đội giống như hôm qua, đem túi ngủ kia đưa cho hắn, trước khi đi nói một câu.',
+            '“Tặng ngươi.” Hứa Thanh ngẩng đầu, nhìn Lôi Đội, bỗng nhiên mở miệng.',
+            '"Tại sao?"',
+            '"Tại sao cái gì mà tại sao?',
+            'Ba cái bánh bao, một cái túi ngủ sao...!',
+            'Không có tại sao, nếu ngươi có tâm, sau này cũng cho ta chút thức ăn là được.'
+        ]
+    },
+
 ];
 
 tests.forEach(t => {
